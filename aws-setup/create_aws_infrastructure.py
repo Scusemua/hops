@@ -610,9 +610,12 @@ def main():
                         break 
                     elif correct.strip().lower() == "n" or correct.strip().lower() == "no":
                         log_important("User elected not to continue. This script will now terminate.")
+                        print()
                         user_wants_to_continue = False 
+                        break 
                     else:
                         log_error("Please enter \"y\" for yes or \"n\" for no. You entered: \"%s\"" % correct)
+                        continue
                 
                 if user_wants_to_continue:
                     log_important("Selected VPC \"%s\" with ID=%s." % (vpc_names[selection_int + 1], selected_vpc_id))

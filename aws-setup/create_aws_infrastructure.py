@@ -191,7 +191,7 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east2", vpc_nam
             }]}])
     ec2_client.modify_subnet_attribute(SubnetId = public_subnet2.id, MapPublicIpOnLaunch = {'Value': True})
     log_success("Successfully created the second public subnet. Subnet ID: " + public_subnet2.id)
-    public_subnets = [public_subnet1, public_subnet2]
+    # public_subnets = [public_subnet1, public_subnet2]
     
     logger.info("Next, creating two private subnets.")
     
@@ -218,7 +218,7 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east2", vpc_nam
         }]
     }])    
     log_success("Successfully created the second private subnet. Subnet ID: " + private_subnet2.id)
-    private_subnets = [private_subnet1, private_subnet2]
+    # private_subnets = [private_subnet1, private_subnet2]
 
     logger.info("Next, creating an internet gateway.")
     # Create and attach an internet gateway.
@@ -294,10 +294,10 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east2", vpc_nam
     private_route_table.associate_with_subnet(SubnetId = private_subnet2.id)
     
     log_success("Successfully associated the private route table with the private subnets.")
-    logger.info("Next, creating and configuring the security group.")
+    logger.info("Next, creating and configuring the security group. Security group name: \"%s\"" % security_group_name)
     
     security_group = ec2_resource.create_security_group(
-        Description='Wukong Security Group', GroupName = security_group_name, VpcId = vpc.id,
+        Description='LambdaFS security group', GroupName = security_group_name, VpcId = vpc.id,
         TagSpecifications = [{
             "ResourceType": "security-group",
             "Tags": [
@@ -305,25 +305,35 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east2", vpc_nam
             ]
         }])
     
+    # TODO: In the actual security group I used, there are two other authorization rules, each of which corresponds to something related to EKS. 
+    # If EKS requires its own security group, then we'll need to update these rules once we've created the EKS cluster. 
     security_group.authorize_ingress(IpPermissions = [
-        {
-        # All traffic that originates from within the security group itself.
-        "FromPort": 0,
-        "ToPort": 65535,
-        "IpProtocol": "-1",
-        "UserIdGroupPairs": [{
-            "GroupId": security_group.id,
-            "VpcId": vpc.id}]
+        { # All traffic that originates from within the security group itself.
+            "FromPort": 0,
+            "ToPort": 65535,
+            "IpProtocol": "-1",
+            "UserIdGroupPairs": [{
+                "GroupId": security_group.id,
+                "VpcId": vpc.id
+            }]
         },
-        {
-        # SSH traffic from your machine's IP address. 
-        "FromPort": 22,
-        "ToPort": 22,
-        "IpProtocol": "tcp",
-        "IpRanges": [
-            {"CidrIp": user_ip + "/32", "Description": "SSH from my PC"}]
+        { # SSH traffic from your machine's IP address. 
+            "FromPort": 22,
+            "ToPort": 22,
+            "IpProtocol": "tcp",
+            "IpRanges": [{
+                "CidrIp": user_ip + "/32", 
+                "Description": "SSH from my PC"
+            }]
         }
     ])
+    
+    log_success("Successfully created and configured security group \"%s\"." % security_group_name)
+    print()
+    print()
+    log_success("=======================")
+    log_success("λFS VPC setup complete.")
+    log_success("=======================")
     
 def create_lambda_fs_client_vm():
     """

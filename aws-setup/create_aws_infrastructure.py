@@ -389,8 +389,8 @@ def create_eks_openwhisk_cluster(aws_profile_name:str = None, aws_region:str = "
     """
     Create the AWS EKS cluster and deploy OpenWhisk on that cluster.
     """
-    if vpc_arn is None:
-        log_error("VPC ARN cannot be null when creating the AWS EKS cluster.")
+    if vpc_id is None:
+        log_error("VPC ID cannot be null when creating the AWS EKS cluster.")
         exit(1)
         
     if aws_profile_name is not None:

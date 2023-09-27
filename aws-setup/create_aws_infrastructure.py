@@ -110,7 +110,7 @@ def get_args() -> argparse.Namespace:
     # parser.add_argument("--vpc-cidr-block", dest = "vpc_cidr_block", type = str, default = "10.0.0.0/16", help = "IPv4 CIDR block to use when creating the VPC. This should be left as the default value of \"10.0.0.0/16\" unless you know what you're doing. Default value: \"10.0.0.0/16\"")
     return parser.parse_args()
 
-def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None, ec2_client = None) -> str:
+def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None, ec2_resource = None, ec2_client = None) -> str:
     """
     Create the Virtual Private Cloud that will house all of the infrastructure required by λFS and HopsFS.
     
@@ -518,8 +518,10 @@ def main():
             log_error("Exception encountered while trying to use AWS credentials profile \"%s\"." % aws_profile_name, no_header = False)
             raise ex 
         ec2_client = session.client('ec2', region_name = aws_region)
+        ec2_resource = session.resource('ec2', region_name = aws_region)
     else:
         ec2_client = boto3.client('ec2', region_name = aws_region)
+        ec2_resource = boto3.resource('ec2', region_name = aws_region)
 
     vpc_id:str = None 
     if not command_line_args.skip_vpc_creation:
@@ -531,7 +533,8 @@ def main():
             vpc_cidr_block = vpc_cidr_block, 
             security_group_name = security_group_name,
             user_ip = user_public_ip,
-            ec2_client = ec2_client
+            ec2_client = ec2_client,
+            ec2_resource = ec2_resource
         )
     else:
         resp = ec2_client.describe_vpcs(

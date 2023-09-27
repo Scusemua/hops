@@ -580,11 +580,12 @@ def main():
                 # Make sure it's at least 1.
                 if selection_int <= 0:
                     log_error("Please enter a positive numerical value between 1 and %d (inclusive). You entered \"%s\"" % (len(resp['Vpcs']), selection_str))
+                    continue
                 
                 # Make sure it's not too large.
                 if selection_int > len(resp['Vpcs']):
                     log_error("Please enter a numerical value between 1 and %d (inclusive). You entered \"%s\"" % (len(resp['Vpcs']), selection_str)) 
-                    pass 
+                    continue
                 
                 # Arrays in Python are zero-indexed.
                 # But we numbered the choices between 1 and len(resp['Vpcs']).
@@ -628,7 +629,6 @@ def main():
         vpc_id = vpc_id,
         vpc_name = vpc_name
     )
-        
 
 if __name__ == "__main__":
     main()

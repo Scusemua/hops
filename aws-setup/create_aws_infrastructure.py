@@ -38,7 +38,7 @@ class bcolors:
     OKBLUE = '\033[94m'
     OKCYAN = '\033[96m'
     OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
+    WARNING = '\033[33m'
     FAIL = '\033[91m'
     ENDC = '\033[0m'
     BOLD = '\033[1m'
@@ -102,7 +102,7 @@ def get_args() -> argparse.Namespace:
     
     # General AWS-related configuration.
     parser.add_argument("-p", "--aws-profile", dest = 'aws_profile', default = None, type = str, help = "The AWS credentials profile to use when creating the resources. If nothing is specified, then this script will ultimately use the default AWS credentials profile.")
-    parser.add_argument("--aws-region", dest = "aws_region", type = str, default = "us-east2", help = "The AWS region in which the AWS resources should be created/provisioned. Default: \"us-east-2\"")
+    parser.add_argument("--aws-region", dest = "aws_region", type = str, default = "us-east-1", help = "The AWS region in which the AWS resources should be created/provisioned. Default: \"us-east-2\"")
     parser.add_argument("--ip", dest = "user_public_ip", default = "DEFAULT_VALUE", type = str, help = "Your public IP address. We'll create network security rules that will enable this IP address to connect to the EC2 VMs via SSH. If you do not specify this value, then we will attempt to resolve your IP address ourselves.")
     
     # VPC.
@@ -111,7 +111,7 @@ def get_args() -> argparse.Namespace:
     # parser.add_argument("--vpc-cidr-block", dest = "vpc_cidr_block", type = str, default = "10.0.0.0/16", help = "IPv4 CIDR block to use when creating the VPC. This should be left as the default value of \"10.0.0.0/16\" unless you know what you're doing. Default value: \"10.0.0.0/16\"")
     return parser.parse_args()
 
-def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east2", vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None):
+def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None):
     """
     Create the Virtual Private Cloud that will house all of the infrastructure required by λFS and HopsFS.
     
@@ -349,7 +349,7 @@ def create_ndb():
     """
     pass 
 
-def create_eks_openwhisk_cluster(aws_profile_name:str = None, aws_region:str = "us-east2", vpc_name:str = "LambdaFS_VPC"):
+def create_eks_openwhisk_cluster(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC"):
     """
     Create the AWS EKS cluster and deploy OpenWhisk on that cluster.
     """
@@ -377,16 +377,18 @@ def main():
     
     command_line_args = get_args() 
     
-    logger.info("Welcome to the λFS Interactive Setup.")
-    logger.info("Before you continue, please note that many of the components required by λFS (and HopsFS) cost money.")
-    logger.info("AWS will begin charging you for these resources as soon as they are created.")
+    log_success("Welcome to the λFS Interactive Setup.")
+    log_warning("Before you continue, please note that many of the components required by λFS (and HopsFS) cost money.")
+    log_warning("AWS will begin charging you for these resources as soon as they are created.")
+    print()
+    print()
     
     NO_COLOR = command_line_args.no_color
     aws_profile_name = command_line_args.aws_profile
     aws_region = command_line_args.aws_region
     user_public_ip = command_line_args.user_public_ip
     vpc_name = command_line_args.vpc_name
-    vpc_cidr_block = command_line_args.vpc_cidr_block
+    vpc_cidr_block = "10.0.0.0/16" # command_line_args.vpc_cidr_block
     security_group_name = command_line_args.security_group_name
     
     if user_public_ip == "DEFAULT_VALUE":
@@ -400,7 +402,15 @@ def main():
     
     # Give the user a chance to verify that the information they specified is correct.
     log_important("Please verify that the following information is correct:")
-    logger.info("Selected AWS profile: \"%s\"" % aws_profile_name)
+    print()
+    
+    if aws_profile_name == None:
+        log_warning("AWS profile is None.")
+        log_warning("If you are unsure what profile to use, you can list the available profiles on your device via the 'aws configure list-profiles' command.")
+        log_warning("Execute this command in a terminal or command prompt session.")
+    else:
+        logger.info("Selected AWS profile: \"%s\"" % aws_profile_name)
+    
     logger.info("Selected AWS region: \"%s\"" % aws_region)
     logger.info("Your IP address: \"%s\"" % user_public_ip)
     if not command_line_args.skip_vpc_creation:
@@ -412,7 +422,9 @@ def main():
     while True:
         proceed = input("\nProceed? [y/n]")
         if proceed.strip().lower() == "y" or proceed.strip().lower() == "yes":
+            print() 
             log_important("Continuing.")
+            print()
             break 
         elif proceed.strip().lower() == "n" or proceed.strip().lower() == "no":
             log_important("User elected not to continue. This script will now terminate.")
@@ -440,7 +452,8 @@ def main():
             aws_region = aws_region, 
             vpc_name = vpc_name, 
             vpc_cidr_block = vpc_cidr_block, 
-            security_group_name = security_group_name
+            security_group_name = security_group_name,
+            user_ip = user_public_ip
         )
         
 

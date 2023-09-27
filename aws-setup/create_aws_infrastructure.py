@@ -95,7 +95,6 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--skip-lambda-fs-infrastrucutre", dest = "skip_lambda_fs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to λFS.")
     parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create MySQL NDB Cluster.")
     parser.add_argument("--skip-vpc", dest = "skip_vpc_creation", action = 'store_true', help = "If passed, then skip the VPC creation step. Note that skipping this step may require additional configuration. See the comments in the provided `wukong_setup_config.yaml` for further information.")
-    parser.add_argument("--skip-lambda", dest = "skip_aws_lambda_creation", action = 'store_true', help = "If passed, then skip the creation of the AWS Lambda function(s).")
     
     # Config.
     parser.add_argument("--no-color", dest = "no_color", action = 'store_true', help = "If passed, then no color will be used when printing messages to the terminal.")    
@@ -106,12 +105,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--ip", dest = "user_public_ip", default = "DEFAULT_VALUE", type = str, help = "Your public IP address. We'll create network security rules that will enable this IP address to connect to the EC2 VMs via SSH. If you do not specify this value, then we will attempt to resolve your IP address ourselves.")
     
     # VPC.
-    parser.add_argument("--vpc-name", dest = "vpc_name", type = str, default = "LambdaFS_VPC", help = "The name to use for your AWS Virtual Private Cloud (VPC). Default: \"LambdaFS_VPC\"")
+    parser.add_argument("--vpc-name", dest = "vpc_name", type = str, default = "LambdaFS_VPC", help = "The name to use for your AWS Virtual Private Cloud (VPC). If you're skipping the VPC-creation step, then you need to specify the name of an existing VPC to use. Default: \"LambdaFS_VPC\"")
     parser.add_argument("--security-group-name", dest = "security_group_name", type = str, default = "lambda-fs-security-group", help = "The name to use for the Security Group. Default: \"lambda-fs-security-group\"")
     # parser.add_argument("--vpc-cidr-block", dest = "vpc_cidr_block", type = str, default = "10.0.0.0/16", help = "IPv4 CIDR block to use when creating the VPC. This should be left as the default value of \"10.0.0.0/16\" unless you know what you're doing. Default value: \"10.0.0.0/16\"")
     return parser.parse_args()
 
-def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None):
+def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None, ec2_client = None) -> str:
     """
     Create the Virtual Private Cloud that will house all of the infrastructure required by λFS and HopsFS.
     
@@ -124,6 +123,10 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_na
         NO_COLOR (bool):
             If True, then print messages will not contain color. Note that colored prints are
             only supported when running on Linux.
+            
+    Returns:
+    --------
+        Returns the ID of the newly-created VPC.
     """
     if user_ip is None:
         log_error("User IP address cannot be 'None' when creating the AWS VPC.")
@@ -134,21 +137,6 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_na
     except OSError:
         log_error("Invalid user IP address specified when creating AWS VPC: \"%s\"" % user_ip)
         exit(1) 
-    
-    session:boto3.Session = None 
-    if aws_profile_name is not None:
-        logger.info("Attempting to create AWS Session using explicitly-specified credentials profile \"%s\" now..." % aws_profile_name)
-        try:
-            session = boto3.Session(profile_name = aws_profile_name)
-            log_success("Successfully created boto3 Session using AWS profile \"%s\"" % aws_profile_name)
-        except Exception as ex: 
-            log_error("Exception encountered while trying to use AWS credentials profile \"%s\"." % aws_profile_name, no_header = False)
-            raise ex 
-        ec2_resource = session.resource('ec2', region_name = aws_region)
-        ec2_client = session.client('ec2', region_name = aws_region)
-    else:
-        ec2_resource = boto3.resource('ec2', region_name = aws_region)
-        ec2_client = boto3.client('ec2', region_name = aws_region)
     
     log_important("Creating VPC \"%s\" now." % vpc_name)
     
@@ -335,6 +323,8 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_na
     log_success("λFS VPC setup complete.")
     log_success("=======================")
     
+    return vpc.id
+    
 def create_lambda_fs_client_vm():
     """
     Create the λFS client VM. Once created, this script should be executed from the λFS client VM to create the remaining AWS infrastructure.
@@ -349,10 +339,60 @@ def create_ndb():
     """
     pass 
 
-def create_eks_openwhisk_cluster(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC"):
+def create_eks_iam_role(iam, iam_role_name = "lambda-fs-eks-cluster-role"):
+    trust_relationships = {
+        "Version": "2023-09-27",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": "eks.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+            }
+        ]
+    }
+    
+    try:
+        role_response = iam.create_role(
+            RoleName = iam_role_name, Description = "Allows access to other AWS service resources that are required to operate clusters managed by EKS. Used by the Lambda-FS EKS cluster.", AssumeRolePolicyDocument = json.dumps(trust_relationships)) 
+    except iam.exceptions.EntityAlreadyExistsException:
+        print_warning("Exception encountered when creating IAM role for the AWS Lambda functions: `iam.exceptions.EntityAlreadyExistsException`", no_header = False)
+        print_warning("Attempting to fetch ARN of existing role with name \"%s\" now..." % iam_role_name, no_header = True)
+        
+        try:
+            role_response = iam.get_role(RoleName = iam_role_name)
+        except iam.exceptions.NoSuchEntityException as ex:
+            # This really shouldn't happen, as we tried to create the role and were told that the role exists.
+            # So, we'll just terminate the script here. The user needs to figure out what's going on at this point. 
+            print_error("Exception encountered while attempting to fetch existing IAM role with name \"%s\": `iam.exceptions.NoSuchEntityException`" % iam_role_name, no_header = False)
+            print_error("Please verify that the AWS role exists and re-execute the script. Terminating now.", no_header = True)
+            exit(1) 
+        
+    role_arn = role_response['Role']['Arn']
+    print_success("Successfully created IAM role. ARN of newly-created role: \"%s\". Next, attaching required IAM role polices." % role_arn)
+    
+    iam.attach_role_policy(
+        PolicyArn = 'arn:aws:iam::aws:policy/AmazonEKSClusterPolicy',
+        RoleName = iam_role_name)
+    iam.attach_role_policy(
+        PolicyArn = 'arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess',
+        RoleName = iam_role_name)
+    iam.attach_role_policy(
+        PolicyArn = 'arn:aws:iam::aws:policy/AmazonS3FullAccess',
+        RoleName = iam_role_name)
+    iam.attach_role_policy(
+        PolicyArn = 'arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole',
+        RoleName = iam_role_name)   
+
+def create_eks_openwhisk_cluster(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC", iam_role_name = "lambda-fs-eks-cluster-role", vpc_id:str = None):
     """
     Create the AWS EKS cluster and deploy OpenWhisk on that cluster.
     """
+    if vpc_arn is None:
+        log_error("VPC ARN cannot be null when creating the AWS EKS cluster.")
+        exit(1)
+        
     if aws_profile_name is not None:
         logger.info("Attempting to create AWS Session using explicitly-specified credentials profile \"%s\" now..." % aws_profile_name)
         try:
@@ -363,8 +403,29 @@ def create_eks_openwhisk_cluster(aws_profile_name:str = None, aws_region:str = "
             raise ex 
         
         iam = session.client('iam')
+        eks = session.client('eks')
     else:
         iam = boto3.client('iam')
+        eks = boto3.client('eks')
+    
+    logger.info("Creating EKS cluster.")
+    
+    logger.info("Creating IAM role.")
+    create_eks_iam_role(iam, iam_role_name = iam_role_name)
+    
+    # Create AWS EKS cluster.
+    response = eks.create_cluster(
+        name = "",
+        version = "",
+        roleArn = "",
+        resourceVpcConfig = {
+            
+        },
+        kubernetesNetworkConfig = {
+            
+        }
+    )
+
 
 def register_openwhisk_namenodes():
     """
@@ -420,7 +481,9 @@ def main():
         logger.info("VPC IPv4 CIDR block: \"%s\"" % vpc_cidr_block)
     
     while True:
-        proceed = input("\nProceed? [y/n]")
+        print()
+        logger.info("Proceed? [y/n]")
+        proceed = input(">")
         if proceed.strip().lower() == "y" or proceed.strip().lower() == "yes":
             print() 
             log_important("Continuing.")
@@ -445,16 +508,126 @@ def main():
             
         return 
 
+    session:boto3.Session = None 
+    if aws_profile_name is not None:
+        logger.info("Attempting to create AWS Session using explicitly-specified credentials profile \"%s\" now..." % aws_profile_name)
+        try:
+            session = boto3.Session(profile_name = aws_profile_name)
+            log_success("Successfully created boto3 Session using AWS profile \"%s\"" % aws_profile_name)
+        except Exception as ex: 
+            log_error("Exception encountered while trying to use AWS credentials profile \"%s\"." % aws_profile_name, no_header = False)
+            raise ex 
+        ec2_client = session.client('ec2', region_name = aws_region)
+    else:
+        ec2_client = boto3.client('ec2', region_name = aws_region)
+
+    vpc_id:str = None 
     if not command_line_args.skip_vpc_creation:
         logger.info("Creating Virtual Private Cloud now.")
-        create_vpc(
+        vpc_id = create_vpc(
             aws_profile_name = aws_profile_name, 
             aws_region = aws_region, 
             vpc_name = vpc_name, 
             vpc_cidr_block = vpc_cidr_block, 
             security_group_name = security_group_name,
-            user_ip = user_public_ip
+            user_ip = user_public_ip,
+            ec2_client = ec2_client
         )
+    else:
+        resp = ec2_client.describe_vpcs(
+            Filters = [{
+                'Name': 'tag:Name',
+                'Values': [
+                    vpc_name  
+                ],
+            }],
+        )
+        
+        if len(resp['Vpcs']) == 0:
+            log_error("Could not find any VPCs with name \"%s\"" % vpc_name)
+            exit(1)
+        elif len(resp['Vpcs']) > 1:
+            log_warning("Found multiple VPCs with name similar to \"%s\"" % vpc_name)
+            log_warning("Please enter the number of the VPC you wish to use: ")
+            
+            counter = 1
+            vpc_names = {}
+            for vpc in resp['Vpcs']:
+                name_of_vpc = None 
+                for tag in resp['Vpcs']['Tags']:
+                    if tag['Key'] == "Name":
+                        name_of_vpc = tag['Value']
+                        vpc_names[counter] = name_of_vpc
+                        break 
+                        
+                if name_of_vpc is None:
+                    log_error("Could not determine name of one of the VPCs returned by EC2Client::DescribeVPCs: %s" % str(vpc))
+                
+                print("%d - \"%s\" - %s" % (counter, resp['Vpcs'][0]['VpcId'], name_of_vpc))
+                counter += 1
+            
+            # Ask the user to pick the VPC from all of the VPCs that were returned by the ec2_client.describe_vpcs() call.
+            while True:
+                selection_str = input(">").strip() 
+                
+                # Convert to an int.
+                try:
+                    selection_int = int(selection_str)
+                except ValueError:
+                    log_error("Please enter a numerical value. You entered \"%s\"" % selection_str)
+                    continue
+                
+                # Make sure it's at least 1.
+                if selection_int <= 0:
+                    log_error("Please enter a positive numerical value between 1 and %d (inclusive). You entered \"%s\"" % (len(resp['Vpcs']), selection_str))
+                
+                # Make sure it's not too large.
+                if selection_int > len(resp['Vpcs']):
+                    log_error("Please enter a numerical value between 1 and %d (inclusive). You entered \"%s\"" % (len(resp['Vpcs']), selection_str)) 
+                    pass 
+                
+                # Arrays in Python are zero-indexed.
+                # But we numbered the choices between 1 and len(resp['Vpcs']).
+                # So, subtract one from whatever the user specified. 
+                selection_int = selection_int - 1
+                
+                selected_vpc = resp['Vpcs'][selection_int]
+                selected_vpc_id = selected_vpc['VpcId']
+                
+                user_wants_to_continue = False 
+                while True:
+                    print() 
+                    logger.info("You selected VPC \"%s\" with ID=%s. Is this correct? [y/n]" % (vpc_names[selection_int + 1], selected_vpc_id))
+                    
+                    correct = input(">").strip() 
+                    
+                    if correct.strip().lower() == "y" or correct.strip().lower() == "yes":
+                        print() 
+                        user_wants_to_continue = True 
+                        vpc_id = selected_vpc_id
+                        print()
+                        break 
+                    elif correct.strip().lower() == "n" or correct.strip().lower() == "no":
+                        log_important("User elected not to continue. This script will now terminate.")
+                        user_wants_to_continue = False 
+                    else:
+                        log_error("Please enter \"y\" for yes or \"n\" for no. You entered: \"%s\"" % correct)
+                
+                if user_wants_to_continue:
+                    log_important("Selected VPC \"%s\" with ID=%s." % (vpc_names[selection_int + 1], selected_vpc_id))
+                    break 
+                else:
+                    log_important("Please enter the number of the VPC you wish to use: ")
+                    continue 
+        else:
+            vpc_id = resp['Vpcs'][0]['VpcId']
+        
+    create_eks_openwhisk_cluster(
+        aws_profile_name = aws_profile_name, 
+        aws_region = aws_region, 
+        vpc_id = vpc_id,
+        vpc_name = vpc_name
+    )
         
 
 if __name__ == "__main__":

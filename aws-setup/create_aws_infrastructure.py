@@ -83,34 +83,7 @@ print_important = log_important
 #   - NDB cluster.
 #   - Deploy OpenWhisk.
 
-def get_args() -> argparse.Namespace:
-    """
-    Parse the commandline arguments.
-    """
-    parser = argparse.ArgumentParser()
-    
-    # WHich resources to create.
-    parser.add_argument("--create-lfs-client-vm", dest = "create_lambda_fs_client_vm", action = "store_true", help = "If passed, then ONLY create the Client VM for λFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
-    parser.add_argument("--skip-hopsfs-infrastrucutre", dest = "skip_hopsfs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to Vanilla HopsFS.")
-    parser.add_argument("--skip-lambda-fs-infrastrucutre", dest = "skip_lambda_fs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to λFS.")
-    parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create MySQL NDB Cluster.")
-    parser.add_argument("--skip-vpc", dest = "skip_vpc_creation", action = 'store_true', help = "If passed, then skip the VPC creation step. Note that skipping this step may require additional configuration. See the comments in the provided `wukong_setup_config.yaml` for further information.")
-    
-    # Config.
-    parser.add_argument("--no-color", dest = "no_color", action = 'store_true', help = "If passed, then no color will be used when printing messages to the terminal.")    
-    
-    # General AWS-related configuration.
-    parser.add_argument("-p", "--aws-profile", dest = 'aws_profile', default = None, type = str, help = "The AWS credentials profile to use when creating the resources. If nothing is specified, then this script will ultimately use the default AWS credentials profile.")
-    parser.add_argument("--aws-region", dest = "aws_region", type = str, default = "us-east-1", help = "The AWS region in which the AWS resources should be created/provisioned. Default: \"us-east-2\"")
-    parser.add_argument("--ip", dest = "user_public_ip", default = "DEFAULT_VALUE", type = str, help = "Your public IP address. We'll create network security rules that will enable this IP address to connect to the EC2 VMs via SSH. If you do not specify this value, then we will attempt to resolve your IP address ourselves.")
-    
-    # VPC.
-    parser.add_argument("--vpc-name", dest = "vpc_name", type = str, default = "LambdaFS_VPC", help = "The name to use for your AWS Virtual Private Cloud (VPC). If you're skipping the VPC-creation step, then you need to specify the name of an existing VPC to use. Default: \"LambdaFS_VPC\"")
-    parser.add_argument("--security-group-name", dest = "security_group_name", type = str, default = "lambda-fs-security-group", help = "The name to use for the Security Group. Default: \"lambda-fs-security-group\"")
-    # parser.add_argument("--vpc-cidr-block", dest = "vpc_cidr_block", type = str, default = "10.0.0.0/16", help = "IPv4 CIDR block to use when creating the VPC. This should be left as the default value of \"10.0.0.0/16\" unless you know what you're doing. Default value: \"10.0.0.0/16\"")
-    return parser.parse_args()
-
-def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None, ec2_resource = None, ec2_client = None) -> str:
+def create_vpc(vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None, ec2_resource = None, ec2_client = None) -> str:
     """
     Create the Virtual Private Cloud that will house all of the infrastructure required by λFS and HopsFS.
     
@@ -126,7 +99,15 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_na
             
     Returns:
     --------
-        Returns the ID of the newly-created VPC.
+        str: vpc id
+    
+        old:
+        dict: A dictionary containing various properties of the newly-created VPC. 
+        {
+            "vpc_id" (str): The ID of the VPC,
+            "subnetIds" (list of str): The IDs of the subnets,
+            "securityGroupIds" (list of str): The security group IDs (there should only be one),
+        }
     """
     if user_ip is None:
         log_error("User IP address cannot be 'None' when creating the AWS VPC.")
@@ -324,6 +305,11 @@ def create_vpc(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_na
     log_success("=======================")
     
     return vpc.id
+    # return {
+    #     "vpc_id": vpc.id,
+    #     "securityGroupIds": [],
+    #     "subnetIds": []        
+    # }
     
 def create_lambda_fs_client_vm():
     """
@@ -339,7 +325,14 @@ def create_ndb():
     """
     pass 
 
-def create_eks_iam_role(iam, iam_role_name = "lambda-fs-eks-cluster-role"):
+def create_eks_iam_role(iam, iam_role_name:str = "lambda-fs-eks-cluster-role") -> str:
+    """
+    Create the IAM Role to be used by the AWS EKS Cluster.
+    
+    Returns:
+    --------
+        str: The ARN of the newly-created IAM role.
+    """
     trust_relationships = {
         "Version": "2023-09-27",
         "Statement": [
@@ -375,17 +368,18 @@ def create_eks_iam_role(iam, iam_role_name = "lambda-fs-eks-cluster-role"):
     iam.attach_role_policy(
         PolicyArn = 'arn:aws:iam::aws:policy/AmazonEKSClusterPolicy',
         RoleName = iam_role_name)
-    iam.attach_role_policy(
-        PolicyArn = 'arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess',
-        RoleName = iam_role_name)
-    iam.attach_role_policy(
-        PolicyArn = 'arn:aws:iam::aws:policy/AmazonS3FullAccess',
-        RoleName = iam_role_name)
-    iam.attach_role_policy(
-        PolicyArn = 'arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole',
-        RoleName = iam_role_name)   
+    
+    return role_arn
 
-def create_eks_openwhisk_cluster(aws_profile_name:str = None, aws_region:str = "us-east-1", vpc_name:str = "LambdaFS_VPC", iam_role_name = "lambda-fs-eks-cluster-role", vpc_id:str = None):
+def create_eks_openwhisk_cluster(
+    aws_profile_name:str = None, 
+    aws_region:str = "us-east-1", 
+    vpc_name:str = "LambdaFS_VPC", 
+    iam_role_name = "lambda-fs-eks-cluster-role", 
+    vpc_id:str = None, 
+    eks_cluster_name:str = "lambda-fs-eks-cluster",
+    ec2_client = None
+):
     """
     Create the AWS EKS cluster and deploy OpenWhisk on that cluster.
     """
@@ -411,27 +405,97 @@ def create_eks_openwhisk_cluster(aws_profile_name:str = None, aws_region:str = "
     logger.info("Creating EKS cluster.")
     
     logger.info("Creating IAM role.")
-    create_eks_iam_role(iam, iam_role_name = iam_role_name)
+    role_arn = create_eks_iam_role(iam, iam_role_name = iam_role_name)
+    
+    # Get the security group ID(s).
+    resp = ec2_client.describe_security_groups(
+        Filters = [{
+            'Name': 'vpc-id',
+            'Values': [vpc_id]   
+        }]
+    )
+    security_groups_ids = []
+    for security_group in resp['SecurityGroups']:
+        security_group_id = security_group['GroupId']
+        security_groups_ids.append(security_group_id)
+    
+    # Get the subnet ID(s).
+    resp = ec2_client.describe_subnets(
+        Filters = [{
+            'Name': 'vpc-id',
+            'Values': [vpc_id]   
+        }]
+    )
+    subnet_ids = []
+    for subnet in resp['Subnets']:
+        subnet_id = subnet['SubnetId']
+        subnet_ids.append(subnet_id)
     
     # Create AWS EKS cluster.
-    response = eks.create_cluster(
-        name = "",
-        version = "",
-        roleArn = "",
-        resourceVpcConfig = {
-            
+    response = eks.create_cluster(  # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/eks/client/create_cluster.html
+        name = eks_cluster_name,    # The unique name to give to your cluster.
+        version = "1.24",           # Desired kubernetes version.
+        roleArn = role_arn,         # The Amazon Resource Name (ARN) of the IAM role that provides permissions for the Kubernetes control plane to make calls to Amazon Web Services API operations on your behalf.
+        resourcesVpcConfig = {      # The VPC configuration that’s used by the cluster control plane.
+            "subnetIds": subnet_ids,
+            "securityGroupIds": security_groups_ids,
+            "endpointPublicAccess": True,
+            "endpointPrivateAccess": False,
+            "publicAccessCidrs": ["0.0.0.0/0"]
         },
-        kubernetesNetworkConfig = {
-            
+        kubernetesNetworkConfig = { # The Kubernetes network configuration for the cluster.
+            # "serviceIpv4Cidr": "", # If you don’t specify a block, Kubernetes assigns addresses from either the 10.100.0.0/16 or 172.20.0.0/16 CIDR blocks. Let's just let it do that.
+            "ipFamily": "ipv4"       # Specify which IP family is used to assign Kubernetes pod and service IP addresses. 
         }
     )
-
+    
+    cluster_response = response['cluster']
+    
+    if cluster_response['status'] == 'FAILED':
+        log_error("Creation of AWS EKS Cluster has apparently failed.")
+        log_error("Full response:")
+        log_error(cluster_response)
+        exit(1)
+        
+    log_important("Response of AWS EKS Cluster creation:")
+    log_important(cluster_response)
+    
 
 def register_openwhisk_namenodes():
     """
     Create and register serverless NameNode functions with the EKS OpenWhisk cluster. 
     """
     pass 
+
+def get_args() -> argparse.Namespace:
+    """
+    Parse the commandline arguments.
+    """
+    parser = argparse.ArgumentParser()
+    
+    # WHich resources to create.
+    parser.add_argument("--create-lfs-client-vm", dest = "create_lambda_fs_client_vm", action = "store_true", help = "If passed, then ONLY create the Client VM for λFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
+    parser.add_argument("--skip-hopsfs-infrastrucutre", dest = "skip_hopsfs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to Vanilla HopsFS.")
+    parser.add_argument("--skip-lambda-fs-infrastrucutre", dest = "skip_lambda_fs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to λFS.")
+    parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create MySQL NDB Cluster.")
+    parser.add_argument("--skip-vpc", dest = "skip_vpc_creation", action = 'store_true', help = "If passed, then skip the VPC creation step. Note that skipping this step may require additional configuration. See the comments in the provided `wukong_setup_config.yaml` for further information.")
+    
+    # Config.
+    parser.add_argument("--no-color", dest = "no_color", action = 'store_true', help = "If passed, then no color will be used when printing messages to the terminal.")    
+    
+    # General AWS-related configuration.
+    parser.add_argument("-p", "--aws-profile", dest = 'aws_profile', default = None, type = str, help = "The AWS credentials profile to use when creating the resources. If nothing is specified, then this script will ultimately use the default AWS credentials profile.")
+    parser.add_argument("--aws-region", dest = "aws_region", type = str, default = "us-east-1", help = "The AWS region in which the AWS resources should be created/provisioned. Default: \"us-east-2\"")
+    parser.add_argument("--ip", dest = "user_public_ip", default = "DEFAULT_VALUE", type = str, help = "Your public IP address. We'll create network security rules that will enable this IP address to connect to the EC2 VMs via SSH. If you do not specify this value, then we will attempt to resolve your IP address ourselves.")
+    
+    # VPC.
+    parser.add_argument("--vpc-name", dest = "vpc_name", type = str, default = "LambdaFS_VPC", help = "The name to use for your AWS Virtual Private Cloud (VPC). If you're skipping the VPC-creation step, then you need to specify the name of an existing VPC to use. Default: \"LambdaFS_VPC\"")
+    parser.add_argument("--security-group-name", dest = "security_group_name", type = str, default = "lambda-fs-security-group", help = "The name to use for the Security Group. Default: \"lambda-fs-security-group\"")
+    # parser.add_argument("--vpc-cidr-block", dest = "vpc_cidr_block", type = str, default = "10.0.0.0/16", help = "IPv4 CIDR block to use when creating the VPC. This should be left as the default value of \"10.0.0.0/16\" unless you know what you're doing. Default value: \"10.0.0.0/16\"")
+    
+    # EKS.
+    parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
+    return parser.parse_args()
 
 def main():
     global NO_COLOR
@@ -451,6 +515,7 @@ def main():
     vpc_name = command_line_args.vpc_name
     vpc_cidr_block = "10.0.0.0/16" # command_line_args.vpc_cidr_block
     security_group_name = command_line_args.security_group_name
+    eks_cluster_name = command_line_args.eks_cluster_name 
     
     if user_public_ip == "DEFAULT_VALUE":
         user_public_ip = get('https://api.ipify.org').content.decode('utf8')
@@ -527,8 +592,6 @@ def main():
     if not command_line_args.skip_vpc_creation:
         logger.info("Creating Virtual Private Cloud now.")
         vpc_id = create_vpc(
-            aws_profile_name = aws_profile_name, 
-            aws_region = aws_region, 
             vpc_name = vpc_name, 
             vpc_cidr_block = vpc_cidr_block, 
             security_group_name = security_group_name,
@@ -633,7 +696,9 @@ def main():
         aws_profile_name = aws_profile_name, 
         aws_region = aws_region, 
         vpc_id = vpc_id,
-        vpc_name = vpc_name
+        vpc_name = vpc_name,
+        eks_cluster_name = eks_cluster_name,
+        ec2_client = ec2_client,
     )
 
 if __name__ == "__main__":

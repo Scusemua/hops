@@ -22,6 +22,7 @@ lambdafs_zk_instance_type: "r5.4xlarge"
 hopsfs_client_vm_instance_type: "r5.4xlarge"
 
 create_lambda_fs_client_vm: True
+create_hops_fs_client_vm: True
 
 skip_iam_role_creation: False
 skip_vpc_creation: False

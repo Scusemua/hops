@@ -35,15 +35,15 @@ LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
 # - Create λFS infrastrucutre.
 #   - Client VM (or will this script be executed from that VM).
 #   X - Client auto-scaling group.
-#   - ZooKeeper nodes. 
+#   X - ZooKeeper nodes. 
 # - Create HopsFS infrastrucutre.
 #   - Client VM.
 #   X - Client auto-scaling group.
-#   - NameNode auto-scaling group.
+#   X - NameNode auto-scaling group.
 # - Create shared infrastrucutre.
 #   X - Create VPC.
 #   X - EKS cluster.
-#   - NDB cluster.
+#   X - NDB cluster.
 #   - Deploy OpenWhisk.
 #
 # - Make it so you can use YAML instead to pass everything in. 
@@ -367,13 +367,64 @@ def create_vpc(
     #     "subnetIds": []        
     # }
     
+def create_hops_fs_client_vm(
+    ec2_resource = None,
+    instance_type:str = "r5.4xlarge",
+    ssh_keypair_name:str = None,
+    subnet_id:str = None,
+    security_group_ids:list = [],
+)->str:
+    """
+    Create the primary HopsFS client VM. Once created, this script should be executed from the λFS client VM to create the remaining AWS infrastructure.
+    
+    Return:
+    -------
+        str: the ID of the newly-created HopsFS client VM.
+    """
+    if ec2_resource is None:
+        log_error("EC2 client cannot be null when creating the HopsFS client VM.")
+        exit(1)
+    
+    if ssh_keypair_name is None:
+        log_error("SSH keypair name cannot be null when creating the HopsFS client VM.")
+        exit(1)
+    
+    hops_fs_client_vm = ec2_resource.create_instances(
+        MinCount = 1,
+        MaxCount = 1,
+        ImageId = HOPSFS_CLIENT_AMI,
+        InstanceType = instance_type,
+        KeyName = ssh_keypair_name,
+        NetworkInterfaces = [{
+            "AssociatePublicIpAddress": True,
+            "DeviceIndex": 0,
+            "SubnetId": subnet_id,
+                "Groups": security_group_ids
+        }],
+        TagSpecifications=[{
+            'ResourceType': 'instance',
+            'Tags': [{
+                    'Key': 'Name',
+                    'Value': "hops-fs-client-driver"
+            }]
+        }]  
+    )
+    
+    return hops_fs_client_vm[0].id   
+
 def create_lambda_fs_client_vm(
     ec2_resource = None,
-    instance_type:str = None,
+    instance_type:str = "r5.4xlarge",
     ssh_keypair_name:str = None,
-)->bool:
+    subnet_id:str = None,
+    security_group_ids:list = [],
+)->str:
     """
-    Create the λFS client VM. Once created, this script should be executed from the λFS client VM to create the remaining AWS infrastructure.
+    Create the primary λFS client VM. Once created, this script should be executed from the λFS client VM to create the remaining AWS infrastructure.
+    
+    Return:
+    -------
+        str: the ID of the newly-created λFS client VM.
     """
     if ec2_resource is None:
         log_error("EC2 client cannot be null when creating the λFS client VM.")
@@ -383,7 +434,28 @@ def create_lambda_fs_client_vm(
         log_error("SSH keypair name cannot be null when creating the λFS client VM.")
         exit(1)
     
-    return False 
+    lambda_fs_client_vm = ec2_resource.create_instances(
+        MinCount = 1,
+        MaxCount = 1,
+        ImageId = LAMBDA_FS_CLIENT_AMI,
+        InstanceType = instance_type,
+        KeyName = ssh_keypair_name,
+        NetworkInterfaces = [{
+            "AssociatePublicIpAddress": True,
+            "DeviceIndex": 0,
+            "SubnetId": subnet_id,
+                "Groups": security_group_ids
+        }],
+        TagSpecifications=[{
+            'ResourceType': 'instance',
+            'Tags': [{
+                    'Key': 'Name',
+                    'Value': "lambda-fs-client-driver"
+            }]
+        }]  
+    )
+    
+    return lambda_fs_client_vm[0].id  
 
 def create_ndb(
     ec2_resource = None,
@@ -392,7 +464,7 @@ def create_ndb(
     subnet_id:str = None,
     ndb_manager_instance_type:str = "r5.4xlarge",
     ndb_datanode_instance_type:str = "r5.4xlarge",
-    security_group_ids = [],
+    security_group_ids:list = [],
 ): 
     """
     Create the required AWS infrastructure for the MySQL NDB cluster. 
@@ -868,7 +940,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-y", "--yaml", type = str, default = None, help = "The path of a YAML configuration file, which can be used in-place of command-line arguments. If nothing is passed for this, then command-line arguments will be used. If a YAML file is passed, then command-line arguments for properties that CAN be defined in YAML will be ignored (even if you did not define them in the YAML file).")
     
     # Which resources to create.
-    parser.add_argument("--create-lfs-client-vm", dest = "create_lambda_fs_client_vm", action = "store_true", help = "If passed, then ONLY create the Client VM for λFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
+    parser.add_argument("--create-lfs-client-vm", dest = "create_lambda_fs_client_vm", action = "store_true", help = "If passed, then create the primary Client VM for λFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
+    parser.add_argument("--create-hopsfs-client-vm", dest = "create_hops_fs_client_vm", action = "store_true", help = "If passed, then create the primary Client VM for HopsFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
     parser.add_argument("--skip-hopsfs-infrastrucutre", dest = "skip_hopsfs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to Vanilla HopsFS.")
     parser.add_argument("--skip-lambda-fs-infrastrucutre", dest = "skip_lambda_fs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to λFS.")
     parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create the MySQL NDB Cluster.")
@@ -962,6 +1035,7 @@ def main():
             hopsfs_client_vm_instance_type = arguments.get("hopsfs_client_vm_instance_type", "r5.4xlarge")
             
             do_create_lambda_fs_client_vm = arguments.get("create_lambda_fs_client_vm", True)
+            do_create_hops_fs_client_vm = arguments.get("create_hops_fs_client_vm", True)
             
             skip_iam_role_creation = arguments.get("skip_iam_role_creation", False)
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
@@ -996,6 +1070,7 @@ def main():
         hopsfs_client_vm_instance_type = command_line_args.hopsfs_client_vm_instance_type
         skip_ndb = command_line_args.skip_ndb
         do_create_lambda_fs_client_vm = command_line_args.create_lambda_fs_client_vm
+        do_create_hops_fs_client_vm = command_line_args.create_hops_fs_client_vm
         skip_launch_templates = command_line_args.skip_launch_templates
         skip_autoscaling_groups = command_line_args.skip_autoscaling_groups
         skip_zookeeper = command_line_args.skip_zookeeper
@@ -1352,14 +1427,13 @@ def main():
     
     if do_create_lambda_fs_client_vm:
         logger.info("Creating λFS client virtual machine.")
-        success = create_lambda_fs_client_vm(ec2_resource = ec2_resource, ssh_keypair_name = ssh_keypair_name, instance_type = lfs_client_vm_instance_type)
+        lambda_fs_primary_client_vm_id = create_lambda_fs_client_vm(ec2_resource = ec2_resource, ssh_keypair_name = ssh_keypair_name, instance_type = lfs_client_vm_instance_type, subnet_id = public_subnet_ids[0], security_group_ids = security_group_ids)
+        log_success("Created λFS client virtual machine: %s" % lambda_fs_primary_client_vm_id)
         
-        if not success:
-            log_error("Failed to create the λFS client virtual machine.")
-            exit(1) 
-        else:
-            log_success("Successfully created λFS client virtual machine.")
-            logger.info("This script will now terminate. Thank you.")
+    if do_create_hops_fs_client_vm:
+        logger.info("Creating λFS client virtual machine.")
+        hops_fs_primary_client_vm_id = create_hops_fs_client_vm(ec2_resource = ec2_resource, ssh_keypair_name = ssh_keypair_name, instance_type = hopsfs_client_vm_instance_type, subnet_id = public_subnet_ids[0], security_group_ids = security_group_ids)
+        log_success("Created λFS client virtual machine: %s" % hops_fs_primary_client_vm_id)
 
 if __name__ == "__main__":
     main()

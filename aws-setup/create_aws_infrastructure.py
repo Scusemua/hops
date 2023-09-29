@@ -32,18 +32,20 @@ LAMBDA_FS_CLIENT_AMI = "ami-027b04d5fece878a8"
 LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
 
 # TODO:
-# - Create λFS infrastrucutre.
-#   - Client VM (or will this script be executed from that VM).
+# X - Create λFS infrastrucutre.
+#   X - Client VM (or will this script be executed from that VM).
 #   X - Client auto-scaling group.
 #   X - ZooKeeper nodes. 
-# - Create HopsFS infrastrucutre.
-#   - Client VM.
+#   - Update configuration of ZooKeeper nodes via SSH.
+# X - Create HopsFS infrastrucutre.
+#   X - Client VM.
 #   X - Client auto-scaling group.
 #   X - NameNode auto-scaling group.
 # - Create shared infrastrucutre.
 #   X - Create VPC.
 #   X - EKS cluster.
 #   X - NDB cluster.
+#   - Update configuration of NDB via SSH.
 #   - Deploy OpenWhisk.
 #
 # - Make it so you can use YAML instead to pass everything in. 

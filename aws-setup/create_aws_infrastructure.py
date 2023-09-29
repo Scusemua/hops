@@ -332,19 +332,37 @@ def create_vpc(
     #     "subnetIds": []        
     # }
     
-def create_lambda_fs_client_vm():
+def create_lambda_fs_client_vm(
+    ec2_client = None,
+    ssh_keypair_name:str = None,
+):
     """
     Create the λFS client VM. Once created, this script should be executed from the λFS client VM to create the remaining AWS infrastructure.
     """
-    pass 
+    if ec2_client is None:
+        log_error("EC2 client cannot be null when creating the λFS client VM.")
+        exit(1)
+    
+    if ssh_keypair_name is None:
+        log_error("SSH keypair name cannot be null when creating the λFS client VM.")
+        exit(1)
 
-def create_ndb():
+def create_ndb(
+    ec2_client = None,
+    ssh_keypair_name:str = None,
+):
     """
     Create the required AWS infrastructure for the MySQL NDB cluster. 
     
     This includes a total of 5 EC2 VMs: one NDB "master" node and four NDB data nodes.
     """
-    pass 
+    if ec2_client is None:
+        log_error("EC2 client cannot be null when creating the NDB cluster.")
+        exit(1)
+    
+    if ssh_keypair_name is None:
+        log_error("SSH keypair name cannot be null when creating the NDB cluster.")
+        exit(1)
 
 def create_eks_iam_role(iam, iam_role_name:str = "lambda-fs-eks-cluster-role") -> str:
     """
@@ -639,6 +657,36 @@ def register_openwhisk_namenodes():
     """
     pass 
 
+def validate_keypair_exists(ssh_keypair_name = None, ec2_client = None)->bool:
+    """
+    Return true if there exists an SSH keypair with the given name registered with AWS.
+    
+    WARNING: Terminates/aborts if the ec2_client or ssh_keypair_name parameter is null!
+    """
+    if ssh_keypair_name is None:
+        log_error("No SSH keypair specified (value is null).")
+        exit(1)
+    
+    if ec2_client is None:
+        log_error("EC2 client is null.")
+        exit(1)
+    
+    try:
+        response = ec2_client.describe_key_pairs(KeyNames=[ssh_keypair_name])
+    except botocore.exceptions.ClientError as error:
+        log_error(error)
+        return False 
+    
+    if len(response['KeyPairs']) > 1:
+        log_error("Somehow found multiple KeyPairs for key-pair name \"%s\"" % ssh_keypair_name) 
+        for keypair in response['KeyPairs']:
+            log_error("Found: \"%s\"" % keypair['KeyName'])
+    
+    if response['KeyPairs'][0]['KeyName'] == ssh_keypair_name:
+        return True 
+    
+    return False 
+
 def get_args() -> argparse.Namespace:
     """
     Parse the commandline arguments.
@@ -673,6 +721,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-lfs-c-ags-it", "--lfs-client-auto-scaling-group-instance-type", dest = "lfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the λFS client auto-scaling group. Default: \"r5.4xlarge\"")
     parser.add_argument("-hfs-c-ags-it","--hopsfs-client-auto-scaling-group-instance-type", dest = "hopsfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS client auto-scaling group. Default: \"r5.4xlarge\"")
     parser.add_argument("-hfs-nn-ags-it","--hopsfs-namenode-auto-scaling-group-instance-type", dest = "hopsfs_namenode_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS NameNode auto-scaling group. Default: \"r5.4xlarge\"")
+    parser.add_argument("--ssh-keypair-name", dest = "ssh_keypair_name", type = str, default = None, help = "The name of the SSH keypair registered with AWS. This MUST be specified when creating any EC2 VMs, as we must pass the name of the keypair to the EC2 API so that you will have SSH access to the virtual machines. There is no default value.")
     
     # EKS.
     parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
@@ -702,6 +751,7 @@ def main():
     eks_cluster_name = command_line_args.eks_cluster_name 
     skip_iam_role_creation = command_line_args.skip_iam_role_creation
     eks_iam_role_name = command_line_args.eks_iam_role_name
+    ssh_keypair_name = command_line_args.ssh_keypair_name
     
     if user_public_ip == "DEFAULT_VALUE":
         log_warning("Attempting to resolve your IP address automatically...")
@@ -774,6 +824,9 @@ def main():
     logger.info("HopsFS client auto-scaling group instance type: %s", command_line_args.hopsfs_client_ags_it)
     logger.info("HopsFS NameNode auto-scaling group instance type: %s", command_line_args.hopsfs_namenode_ags_it)
     
+    print()
+    logger.info("SSH Keypair Name: %s" % ssh_keypair_name)
+    
     # time.sleep(0.125)
     
     # Give the user a chance to verify that the information they specified is correct.
@@ -791,20 +844,12 @@ def main():
             exit(0)
         else:
             log_error("Please enter \"y\" for yes or \"n\" for no. You entered: \"%s\"" % proceed)
+   
+    if not validate_keypair_exists(ssh_keypair_name = ssh_keypair_name, ec2_client = ec2_client):
+        log_error("Could not find SSH keypair named \"%s\" registered with AWS." % ssh_keypair_name)
+        log_error("Please verify that the given keypair exists, is registered with AWS, and has no typos in its name.")
+        exit(1)
     
-    if command_line_args.create_lambda_fs_client_vm:
-        logger.info("Creating λFS client virtual machine.")
-        success = create_lambda_fs_client_vm()
-        
-        if not success:
-            log_error("Failed to create the λFS client virtual machine.")
-            exit(1) 
-        else:
-            log_success("Successfully created λFS client virtual machine.")
-            logger.info("This script will now terminate. Thank you.")
-            
-        return 
-
     session:boto3.Session = None 
     if aws_profile_name is not None:
         logger.info("Attempting to create AWS Session using explicitly-specified credentials profile \"%s\" now..." % aws_profile_name)
@@ -949,6 +994,24 @@ def main():
         vpc_id = vpc_id,
         command_line_args = command_line_args,
     )
+    
+    logger.info("Creating MySQL NDB Cluster now.")
+    if not command_line_args.skip_ndb:
+        create_ndb(ec2_client = ec2_client, ssh_keypair_name = ssh_keypair_name)
+    
+    if command_line_args.create_lambda_fs_client_vm:
+        logger.info("Creating λFS client virtual machine.")
+        success = create_lambda_fs_client_vm(ec2_client = ec2_client, ssh_keypair_name = ssh_keypair_name)
+        
+        if not success:
+            log_error("Failed to create the λFS client virtual machine.")
+            exit(1) 
+        else:
+            log_success("Successfully created λFS client virtual machine.")
+            logger.info("This script will now terminate. Thank you.")
+            
+        return 
+
 
 if __name__ == "__main__":
     main()

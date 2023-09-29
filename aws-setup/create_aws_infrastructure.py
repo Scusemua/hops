@@ -4,10 +4,13 @@ import botocore
 import json
 import logging 
 import os 
+import requests 
 import socket 
 import time 
-import yaml
+import urllib3
 
+from time import sleep
+from tqdm import tqdm
 from requests import get
 
 os.system("color")
@@ -18,6 +21,26 @@ and to replicate the experiments conducted in the paper, "".
 
 This script should be executed from 
 """
+
+# TODO:
+# - Create L-FS infrastrucutre.
+#   - Client VM (or will this script be executed from that VM).
+#   - Client auto-scaling group.
+#   - ZooKeeper nodes. 
+# - Create HopsFS infrastrucutre.
+#   - Client VM.
+#   - Client auto-scaling group.
+#   - NameNode auto-scaling group.
+# - Create shared infrastrucutre.
+#   X - Create VPC.
+#   X - EKS cluster.
+#   - NDB cluster.
+#   - Deploy OpenWhisk.
+#
+# - Script to delete everything. 
+    # - Delete NAT gateway.
+    # - Delete routes from route tables.
+    # - Delete internet gateway.
 
 # Set up logging.
 logger = logging.getLogger(__name__)
@@ -69,21 +92,14 @@ print_warning = log_warning
 print_error = log_error
 print_important = log_important
 
-# TODO:
-# - Create L-FS infrastrucutre.
-#   - Client VM (or will this script be executed from that VM).
-#   - Client auto-scaling group.
-#   - ZooKeeper nodes. 
-# - Create HopsFS infrastrucutre.
-#   - Client VM.
-#   - Client auto-scaling group.
-#   - NameNode auto-scaling group.
-# - Create shared infrastrucutre.
-#   - EKS cluster.
-#   - NDB cluster.
-#   - Deploy OpenWhisk.
-
-def create_vpc(vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16", security_group_name:str = "lambda-fs-security-group", user_ip:str = None, ec2_resource = None, ec2_client = None) -> str:
+def create_vpc(
+    aws_region:str = "us-east-1",
+    vpc_name:str = "LambdaFS_VPC", 
+    vpc_cidr_block:str = "10.0.0.0/16", 
+    security_group_name:str = "lambda-fs-security-group", 
+    user_ip:str = None, 
+    ec2_resource = None, 
+    ec2_client = None) -> str:
     """
     Create the Virtual Private Cloud that will house all of the infrastructure required by λFS and HopsFS.
     
@@ -140,6 +156,7 @@ def create_vpc(vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16"
     # Create the first public subnet.
     public_subnet1 = vpc.create_subnet(
         CidrBlock = "10.0.0.0/20",
+        AvailabilityZone = aws_region + "a",
         TagSpecifications = [{
             'ResourceType': 'subnet',
             'Tags': [{
@@ -152,6 +169,7 @@ def create_vpc(vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16"
     # Create the second public subnet.
     public_subnet2 = vpc.create_subnet(
         CidrBlock = "10.0.16.0/20",
+        AvailabilityZone = aws_region + "b",
         TagSpecifications = [{
             'ResourceType': 'subnet',
             'Tags': [{
@@ -167,6 +185,7 @@ def create_vpc(vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16"
     # Create the first private subnet.
     private_subnet1 = vpc.create_subnet(
         CidrBlock = "10.0.128.0/20",
+        AvailabilityZone = aws_region + "a",
         TagSpecifications = [{
         'ResourceType': 'subnet',
         'Tags': [{
@@ -179,6 +198,7 @@ def create_vpc(vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16"
     # Create the second private subnet.
     private_subnet2 = vpc.create_subnet(
         CidrBlock = "10.0.144.0/20",
+        AvailabilityZone = aws_region + "b",
         TagSpecifications = [{
         'ResourceType': 'subnet',
         'Tags': [{
@@ -230,7 +250,8 @@ def create_vpc(vpc_name:str = "LambdaFS_VPC", vpc_cidr_block:str = "10.0.0.0/16"
     logger.info("Next, creating route tables and associated public route table with public subnet.")
     logger.info("But first, sleeping for ~45 seconds so that the NAT gateway can be created.")
 
-    time.sleep(45)
+    for _ in tqdm(range(181)):
+        sleep(0.25)
     
     # The VPC creates a route table, so we have one to begin with. We use this as the public route table.
     initial_route_table = list(vpc.route_tables.all())[0] 
@@ -334,21 +355,22 @@ def create_eks_iam_role(iam, iam_role_name:str = "lambda-fs-eks-cluster-role") -
         str: The ARN of the newly-created IAM role.
     """
     trust_relationships = {
-        "Version": "2023-09-27",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Principal": {
-                    "Service": "eks.amazonaws.com"
-                },
-                "Action": "sts:AssumeRole"
-            }
-        ]
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+                "Service": ["eks.amazonaws.com"]
+            },
+            "Action": ["sts:AssumeRole"]
+        }],
     }
     
     try:
         role_response = iam.create_role(
-            RoleName = iam_role_name, Description = "Allows access to other AWS service resources that are required to operate clusters managed by EKS. Used by the Lambda-FS EKS cluster.", AssumeRolePolicyDocument = json.dumps(trust_relationships)) 
+            RoleName = iam_role_name, 
+            Path = "/",
+            Description = "Allows access to other AWS service resources that are required to operate clusters managed by EKS. Used by the Lambda-FS EKS cluster.", 
+            AssumeRolePolicyDocument = json.dumps(trust_relationships)) 
     except iam.exceptions.EntityAlreadyExistsException:
         print_warning("Exception encountered when creating IAM role for the AWS Lambda functions: `iam.exceptions.EntityAlreadyExistsException`", no_header = False)
         print_warning("Attempting to fetch ARN of existing role with name \"%s\" now..." % iam_role_name, no_header = True)
@@ -375,9 +397,10 @@ def create_eks_openwhisk_cluster(
     aws_profile_name:str = None, 
     aws_region:str = "us-east-1", 
     vpc_name:str = "LambdaFS_VPC", 
-    iam_role_name = "lambda-fs-eks-cluster-role", 
+    eks_iam_role_name = "lambda-fs-eks-cluster-role", 
     vpc_id:str = None, 
     eks_cluster_name:str = "lambda-fs-eks-cluster",
+    create_eks_iam_role = True,
     ec2_client = None
 ):
     """
@@ -405,7 +428,19 @@ def create_eks_openwhisk_cluster(
     logger.info("Creating EKS cluster.")
     
     logger.info("Creating IAM role.")
-    role_arn = create_eks_iam_role(iam, iam_role_name = iam_role_name)
+    
+    if create_eks_iam_role:
+        role_arn = create_eks_iam_role(iam, iam_role_name = eks_iam_role_name)
+    else:
+        try:
+            response = iam.get_role(RoleName = eks_iam_role_name)
+        except iam.exceptions.NoSuchEntityException:
+            print()
+            log_error("Could not find existing IAM role with name \"%s\"." % eks_iam_role_name)
+            log_error("Please verify that the IAM role you specified exists and doesn't contain any typos in the name.")
+            exit(1)
+        
+        role_arn = response['Role']['Arn']
     
     # Get the security group ID(s).
     resp = ec2_client.describe_security_groups(
@@ -445,7 +480,7 @@ def create_eks_openwhisk_cluster(
         },
         kubernetesNetworkConfig = { # The Kubernetes network configuration for the cluster.
             # "serviceIpv4Cidr": "", # If you don’t specify a block, Kubernetes assigns addresses from either the 10.100.0.0/16 or 172.20.0.0/16 CIDR blocks. Let's just let it do that.
-            "ipFamily": "ipv4"       # Specify which IP family is used to assign Kubernetes pod and service IP addresses. 
+            #"ipFamily": "ipv4"       # Specify which IP family is used to assign Kubernetes pod and service IP addresses. 
         }
     )
     
@@ -456,11 +491,100 @@ def create_eks_openwhisk_cluster(
         log_error("Full response:")
         log_error(cluster_response)
         exit(1)
-        
-    log_important("Response of AWS EKS Cluster creation:")
-    log_important(cluster_response)
     
+    log_important("AWS EKS Cluster creation API call succeeded.")
+    log_important("According to the AWS documentation, it can typically take 10 - 15 minutes for the cluster to be fully created and become operational.")
+    log_important("We will begin creating some of the other components while we wait for the EKS Cluster to finish being created.")
 
+def create_ec2_auto_scaling_group(
+    auto_scaling_group_name:str = "",
+    launch_configuration_name:str = "",
+    launch_template_name:str = "",
+    min_size:int = 0,
+    max_size:int = 8,
+    desired_capacity:int = 0,
+    availability_zones:list = [],
+    autoscaling_client = None
+):
+    """
+    Create an EC2 auto-scaling group.
+    """
+    if autoscaling_client is None:
+        log_error("Autoscaling client cannot be done when creating an auto-scaling group.")
+        exit(1)
+        
+    logger.info("Creating auto-scaling group \"%s\" with launch template \"%s\"." % (auto_scaling_group_name, launch_template_name))
+        
+    response = autoscaling_client.create_auto_scaling_group(
+        AutoScalingGroupName = auto_scaling_group_name,
+        LaunchConfigurationName = launch_configuration_name,
+        LaunchTemplate = {
+            'LaunchTemplateName': launch_template_name,
+            'Version': '$Default',
+        },
+        MinSize = min_size,
+        MaxSize = max_size,
+        DesiredCapacity = desired_capacity,
+        AvailabilityZones = availability_zones,
+    )
+
+def create_launch_template(
+    launch_template_name:str = "",
+    launch_template_description:str = "",
+    ec2_client = None,
+    vpc_id:str = None,
+    ami_id:str = "", 
+    instance_type:str = "",
+    security_group_ids:list = [],
+):
+    """
+    Create an EC2 Launch Template for use with an EC2 Auto-Scaling Group. 
+    """
+    if ec2_client is None:
+        log_error("EC2 client cannot be null when creating a launch template.")
+        exit(1)
+    
+    response = ec2_client.create_launch_template(
+        LaunchTemplateName = launch_template_name,
+        VersionDescription = launch_template_description,
+        LaunchTemplateData = {
+            "ImageID": ami_id,
+            "InstanceType": instance_type,
+            "SecurityGroupIds": security_group_ids,
+            "NetworkInterfaces": [{
+                'AssociatePublicIpAddress': True,
+                'DeviceIndex': 0,
+            }]
+        },
+        TagSpecifications = [{
+            "ResourceType": "vpc",
+            "Tags": [{
+                "Key": "vpc",
+                "Value": vpc_id,
+            }]   
+        }]
+    )
+
+# def create_lambda_fs_client_auto_scaling_group(
+#     auto_scaling_group_name = ""
+# ):
+#     """
+#     Create the EC2 auto-scaling group for the λFS clients.
+#     """
+#     pass 
+
+# def create_hops_fs_client_auto_scaling_group():
+#     """
+#     Create the EC2 auto-scaling group for the HopsFS clients.
+#     """
+#     pass 
+
+# def create_hops_fs_namenode_auto_scaling_group():
+#     """
+#     Create the EC2 auto-scaling group for the HopsFS NameNodes.
+#     """
+#     pass 
+    
 def register_openwhisk_namenodes():
     """
     Create and register serverless NameNode functions with the EKS OpenWhisk cluster. 
@@ -473,11 +597,12 @@ def get_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser()
     
-    # WHich resources to create.
+    # Which resources to create.
     parser.add_argument("--create-lfs-client-vm", dest = "create_lambda_fs_client_vm", action = "store_true", help = "If passed, then ONLY create the Client VM for λFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
     parser.add_argument("--skip-hopsfs-infrastrucutre", dest = "skip_hopsfs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to Vanilla HopsFS.")
     parser.add_argument("--skip-lambda-fs-infrastrucutre", dest = "skip_lambda_fs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to λFS.")
     parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create MySQL NDB Cluster.")
+    parser.add_argument("--skip-eks", dest = "skip_eks", action = "store_true", help = "Do not create AWS EKS Cluster. If you skip the creation of the AWS EKS cluster, you should pass the name of the existing AWS EKS cluster via the '--eks-cluster-name' command-line argument.")
     parser.add_argument("--skip-vpc", dest = "skip_vpc_creation", action = 'store_true', help = "If passed, then skip the VPC creation step. Note that skipping this step may require additional configuration. See the comments in the provided `wukong_setup_config.yaml` for further information.")
     
     # Config.
@@ -493,8 +618,15 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--security-group-name", dest = "security_group_name", type = str, default = "lambda-fs-security-group", help = "The name to use for the Security Group. Default: \"lambda-fs-security-group\"")
     # parser.add_argument("--vpc-cidr-block", dest = "vpc_cidr_block", type = str, default = "10.0.0.0/16", help = "IPv4 CIDR block to use when creating the VPC. This should be left as the default value of \"10.0.0.0/16\" unless you know what you're doing. Default value: \"10.0.0.0/16\"")
     
+    # EC2 
+    parser.add_argument("-lfs-c-ags-it", "--lfs-client-auto-scaling-group-instance-type", dest = "lfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the λFS client auto-scaling group. Default: \"r5.4xlarge\"")
+    parser.add_argument("-hfs-c-ags-it","--hopsfs-client-auto-scaling-group-instance-type", dest = "hopsfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS client auto-scaling group. Default: \"r5.4xlarge\"")
+    parser.add_argument("-hfs-nn-ags-it","--hopsfs-namenode-auto-scaling-group-instance-type", dest = "hopsfs_namenode_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS NameNode auto-scaling group. Default: \"r5.4xlarge\"")
+    
     # EKS.
     parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
+    parser.add_argument("--skip-eks-iam-role-creation", dest = "skip_iam_role_creation", action = 'store_true', help = "If passed, then skip the creation of the IAM role required by the AWS EKS cluster. You must pass the name of the IAM role via the '--eks-iam-role' argument if the role is not created with this script.")
+    parser.add_argument("--eks-iam-role-name", dest = "eks_iam_role_name", type = str, default = "lambda-fs-eks-cluster-role", help = "The name to either use when creating the new IAM role for the AWS EKS cluster, or this is the name of an existing role to use for the cluster (when you also pass the '--skip-eks-iam-role-creation' argument).")
     return parser.parse_args()
 
 def main():
@@ -508,6 +640,8 @@ def main():
     print()
     print()
     
+    # time.sleep(0.125)
+    
     NO_COLOR = command_line_args.no_color
     aws_profile_name = command_line_args.aws_profile
     aws_region = command_line_args.aws_region
@@ -516,9 +650,19 @@ def main():
     vpc_cidr_block = "10.0.0.0/16" # command_line_args.vpc_cidr_block
     security_group_name = command_line_args.security_group_name
     eks_cluster_name = command_line_args.eks_cluster_name 
+    skip_iam_role_creation = command_line_args.skip_iam_role_creation
+    eks_iam_role_name = command_line_args.eks_iam_role_name
     
     if user_public_ip == "DEFAULT_VALUE":
-        user_public_ip = get('https://api.ipify.org').content.decode('utf8')
+        log_warning("Attempting to resolve your IP address automatically...")
+        try:
+            user_public_ip = get('https://api.ipify.org', timeout = 5).content.decode('utf8')
+            log_success("Successfully resolved your IP address.")
+            print()
+            # time.sleep(0.125)
+        except (requests.exceptions.ReadTimeout, urllib3.exceptions.ReadTimeoutError):
+            log_error("Could not connect to api.ipify.org to resolve your IP address. Please pass your IP address to this script directly to continue.")
+            exit(1)
     
     try:
         socket.inet_aton(user_public_ip)
@@ -526,25 +670,63 @@ def main():
         log_error("Invalid user IP address: \"%s\"" % user_public_ip)
         exit(1) 
     
-    # Give the user a chance to verify that the information they specified is correct.
-    log_important("Please verify that the following information is correct:")
-    print()
-    
     if aws_profile_name == None:
         log_warning("AWS profile is None.")
         log_warning("If you are unsure what profile to use, you can list the available profiles on your device via the 'aws configure list-profiles' command.")
-        log_warning("Execute this command in a terminal or command prompt session.")
+        log_warning("Execute that command ('aws configure list-profiles') in a terminal or command prompt session to view a list of the available AWS CLI profiles.")
+        log_warning("For now, we will use the default profile.")
     else:
         logger.info("Selected AWS profile: \"%s\"" % aws_profile_name)
+
+    # time.sleep(0.25)
+    
+    print()
+    print()
+    print()
+    log_important("Please verify that the following information is correct before continuing.")
+    print()
+    
+    # time.sleep(0.125)
     
     logger.info("Selected AWS region: \"%s\"" % aws_region)
     logger.info("Your IP address: \"%s\"" % user_public_ip)
+    print()
+    # time.sleep(0.125)
     if not command_line_args.skip_vpc_creation:
+        logger.info("Create VPC: TRUE")
         if len(vpc_name) == 0:
             log_error("Invalid VPC name specified. VPC name must ")
-        logger.info("VPC name: \"%s\"" % vpc_name)
+        logger.info("New VPC name: \"%s\"" % vpc_name)
         logger.info("VPC IPv4 CIDR block: \"%s\"" % vpc_cidr_block)
+    else:
+        logger.info("Create VPC: FALSE")
+        logger.info("Existing VPC name: \"%s\"" % vpc_name)
     
+    print()
+    # time.sleep(0.125)
+    if not command_line_args.skip_eks:
+        logger.info("Create AWS EKS cluster: TRUE")
+        logger.info("New AWS EKS cluster name: \"%s\"" % eks_cluster_name)
+    else:
+        logger.info("Create AWS EKS cluster: FALSE")
+        logger.info("Existing AWS EKS cluster name: \"%s\"" % eks_cluster_name)
+    
+    print()
+    if not skip_iam_role_creation:
+        logger.info("Create AWS EKS cluster IAM role: TRUE")
+        logger.info("New IAM role name: \"%s\"" % eks_iam_role_name)
+    else:
+        logger.info("Create AWS EKS cluster IAM role: FALSE")
+        logger.info("Existing IAM role name: \"%s\"" % eks_iam_role_name)
+    
+    print()
+    logger.info("λFS client auto-scaling group instance type: %s", command_line_args.lfs_client_ags_it)
+    logger.info("HopsFS client auto-scaling group instance type: %s", command_line_args.hopsfs_client_ags_it)
+    logger.info("HopsFS NameNode auto-scaling group instance type: %s", command_line_args.hopsfs_namenode_ags_it)
+    
+    # time.sleep(0.125)
+    
+    # Give the user a chance to verify that the information they specified is correct.
     while True:
         print()
         logger.info("Proceed? [y/n]")
@@ -584,14 +766,17 @@ def main():
             raise ex 
         ec2_client = session.client('ec2', region_name = aws_region)
         ec2_resource = session.resource('ec2', region_name = aws_region)
+        autoscaling_client = session.client("autoscaling", region_name = aws_region)
     else:
         ec2_client = boto3.client('ec2', region_name = aws_region)
         ec2_resource = boto3.resource('ec2', region_name = aws_region)
+        autoscaling_client = boto3.client("autoscaling", region_name = aws_region)
 
     vpc_id:str = None 
     if not command_line_args.skip_vpc_creation:
         logger.info("Creating Virtual Private Cloud now.")
         vpc_id = create_vpc(
+            aws_region = aws_region,
             vpc_name = vpc_name, 
             vpc_cidr_block = vpc_cidr_block, 
             security_group_name = security_group_name,
@@ -600,6 +785,7 @@ def main():
             ec2_resource = ec2_resource
         )
     else:
+        logger.info("Querying AWS for VPC ID of VPC \"%s\"" % vpc_name)
         resp = ec2_client.describe_vpcs(
             Filters = [{
                 'Name': 'tag:Name',
@@ -691,6 +877,8 @@ def main():
                     continue 
         else:
             vpc_id = resp['Vpcs'][0]['VpcId']
+            
+    log_success("Resolved VPC ID of VPC \"%s\" as %s" % (vpc_name, vpc_id))
         
     create_eks_openwhisk_cluster(
         aws_profile_name = aws_profile_name, 
@@ -699,7 +887,32 @@ def main():
         vpc_name = vpc_name,
         eks_cluster_name = eks_cluster_name,
         ec2_client = ec2_client,
+        create_eks_iam_role = not skip_iam_role_creation,
+        eks_iam_role_name = eks_iam_role_name,
     )
+
+    resp = ec2_client.describe_security_groups(
+        Filters = [{
+            'Name': 'vpc-id',
+            'Values': [vpc_id]   
+        }]
+    )
+    security_groups_ids = []
+    for security_group in resp['SecurityGroups']:
+        security_group_id = security_group['GroupId']
+        security_groups_ids.append(security_group_id)
+
+    # λFS clients.
+    create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = "ami-027b04d5fece878a8", instance_type = command_line_args.lfs_client_ags_it, security_group_id = security_groups_ids)
+    create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
+    
+    # HopsFS clients.
+    create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = "ami-01d2cba66e4fe4e1e", instance_type = command_line_args.hopsfs_client_ags_it, security_group_id = security_groups_ids)
+    create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
+    
+    # HopsFS NameNodes.
+    create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = "ami-0cc88cd1a5dfaef18", instance_type = command_line_args.hopsfs_namenode_ags_it, security_group_id = security_groups_ids)
+    create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
 
 if __name__ == "__main__":
     main()

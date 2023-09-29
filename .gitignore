@@ -21,3 +21,5 @@ scripts
 dev-support/private_ips.txt
 dev-support/public_ips_no_user.txt
 dev-support/output/
+
+aws-setup/config.yaml

@@ -22,6 +22,14 @@ and to replicate the experiments conducted in the paper, "".
 This script should be executed from 
 """
 
+MYSQL_NDB_MANAGER_AMI = "ami-0a0e055a66e58df2c"
+MYSQL_NDB_DATANODE1_AMI = "ami-075e47140b5fd017a"
+MYSQL_NDB_DATANODE2_AMI = "ami-0fdbf79b2ec52386e"
+HOPSFS_CLIENT_AMI = "ami-01d2cba66e4fe4e1e"
+HOPSFS_NAMENODE_AMI = "ami-0cc88cd1a5dfaef18"
+LAMBDA_FS_CLIENT_AMI = "ami-027b04d5fece878a8"
+LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
+
 # TODO:
 # - Create L-FS infrastrucutre.
 #   - Client VM (or will this script be executed from that VM).
@@ -159,10 +167,16 @@ def create_vpc(
         AvailabilityZone = aws_region + "a",
         TagSpecifications = [{
             'ResourceType': 'subnet',
-            'Tags': [{
-                'Key': 'Name',
-                'Value': "serverless-mds-subnet-public1"
-            }]}])
+            'Tags': [
+                {
+                    'Key': 'Name',
+                    'Value': "serverless-mds-subnet-public1"
+                },
+                {
+                    'Key': 'PrivacyType',
+                    'Value': 'public'
+                }
+            ]}])
     ec2_client.modify_subnet_attribute(SubnetId = public_subnet1.id, MapPublicIpOnLaunch = {'Value': True})
     log_success("Successfully created the first public subnet. Subnet ID: " + public_subnet1.id)
 
@@ -172,10 +186,16 @@ def create_vpc(
         AvailabilityZone = aws_region + "b",
         TagSpecifications = [{
             'ResourceType': 'subnet',
-            'Tags': [{
-                'Key': 'Name',
-                'Value': "serverless-mds-subnet-public2"
-            }]}])
+            'Tags': [
+                {
+                    'Key': 'Name',
+                    'Value': "serverless-mds-subnet-public2"
+                },
+                {
+                    'Key': 'PrivacyType',
+                    'Value': 'public'
+                }                
+            ]}])
     ec2_client.modify_subnet_attribute(SubnetId = public_subnet2.id, MapPublicIpOnLaunch = {'Value': True})
     log_success("Successfully created the second public subnet. Subnet ID: " + public_subnet2.id)
     # public_subnets = [public_subnet1, public_subnet2]
@@ -188,10 +208,16 @@ def create_vpc(
         AvailabilityZone = aws_region + "a",
         TagSpecifications = [{
         'ResourceType': 'subnet',
-        'Tags': [{
-            'Key': 'Name',
-            'Value': "serverless-mds-subnet-private1"
-        }]
+        'Tags': [
+            {
+                'Key': 'Name',
+                'Value': "serverless-mds-subnet-private1"
+            },
+            {
+                'Key': 'PrivacyType',
+                'Value': 'private'
+            }            
+        ]
     }])
     log_success("Successfully created the first private subnet. Subnet ID: " + private_subnet1.id)
     
@@ -201,10 +227,16 @@ def create_vpc(
         AvailabilityZone = aws_region + "b",
         TagSpecifications = [{
         'ResourceType': 'subnet',
-        'Tags': [{
-            'Key': 'Name',
-            'Value': "serverless-mds-subnet-private2"
-        }]
+        'Tags': [
+            {
+                'Key': 'Name',
+                'Value': "serverless-mds-subnet-private2"
+            },
+            {
+                'Key': 'PrivacyType',
+                'Value': 'private'
+            }            
+        ]
     }])    
     log_success("Successfully created the second private subnet. Subnet ID: " + private_subnet2.id)
     # private_subnets = [private_subnet1, private_subnet2]
@@ -350,6 +382,9 @@ def create_lambda_fs_client_vm(
 def create_ndb(
     ec2_client = None,
     ssh_keypair_name:str = None,
+    num_datanodes:int = 4,
+    subnet_id:str = None,
+    security_group_ids = [],
 ):
     """
     Create the required AWS infrastructure for the MySQL NDB cluster. 
@@ -363,6 +398,19 @@ def create_ndb(
     if ssh_keypair_name is None:
         log_error("SSH keypair name cannot be null when creating the NDB cluster.")
         exit(1)
+        
+    # Create the NDB manager server.
+    ndb_manager_instance = ec2_client.create_instances(
+        MinCount = 1,
+        MaxCount = 1,
+        ImageId = MYSQL_NDB_MANAGER_AMI,
+        InstanceType = "",
+        KeyName = ssh_keypair_name,
+        SecurityGroupIds = security_group_ids,
+        SubnetId=subnet_id,
+    )
+    
+    # Create `num_datanodes` NDB data nodes.
 
 def create_eks_iam_role(iam, iam_role_name:str = "lambda-fs-eks-cluster-role") -> str:
     """
@@ -545,6 +593,8 @@ def create_ec2_auto_scaling_group(
         DesiredCapacity = desired_capacity,
         AvailabilityZones = availability_zones,
     )
+    
+    logger.info("Response from creating auto-scaling group \"%s\": %s" % (auto_scaling_group_name, str(response)))
 
 def create_launch_template(
     launch_template_name:str = "",
@@ -582,56 +632,29 @@ def create_launch_template(
             }]   
         }]
     )
-
-# def create_lambda_fs_client_auto_scaling_group(
-#     auto_scaling_group_name = ""
-# ):
-#     """
-#     Create the EC2 auto-scaling group for the λFS clients.
-#     """
-#     pass 
-
-# def create_hops_fs_client_auto_scaling_group():
-#     """
-#     Create the EC2 auto-scaling group for the HopsFS clients.
-#     """
-#     pass 
-
-# def create_hops_fs_namenode_auto_scaling_group():
-#     """
-#     Create the EC2 auto-scaling group for the HopsFS NameNodes.
-#     """
-#     pass 
+    
+    logger.info("Response from creating launch template \"%s\": %s" % (launch_template_name, str(response)))
 
 def create_launch_templates_and_instance_groups(
     ec2_client = None,
     autoscaling_client = None,
     vpc_id:str = None,
-    command_line_args:argparse.Namespace = None
+    command_line_args:argparse.Namespace = None,
+    security_groups_ids:list = []
 ):
     """
     Create the launch templates and auto-scaling groups for λFS clients, HopsFS clients, and HopsFS NameNodes.
     """
-    resp = ec2_client.describe_security_groups(
-        Filters = [{
-            'Name': 'vpc-id',
-            'Values': [vpc_id]   
-        }]
-    )
-    security_groups_ids = []
-    for security_group in resp['SecurityGroups']:
-        security_group_id = security_group['GroupId']
-        security_groups_ids.append(security_group_id)
 
     if not command_line_args.skip_launch_templates:
         logger.info("Creating the EC2 launch templates now.")
         
         # λFS clients.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = "ami-027b04d5fece878a8", instance_type = command_line_args.lfs_client_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = LAMBDA_FS_CLIENT_AMI, instance_type = command_line_args.lfs_client_ags_it, security_group_id = security_groups_ids)
         # HopsFS clients.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = "ami-01d2cba66e4fe4e1e", instance_type = command_line_args.hopsfs_client_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = HOPSFS_CLIENT_AMI, instance_type = command_line_args.hopsfs_client_ags_it, security_group_id = security_groups_ids)
         # HopsFS NameNodes.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = "ami-0cc88cd1a5dfaef18", instance_type = command_line_args.hopsfs_namenode_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = HOPSFS_NAMENODE_AMI, instance_type = command_line_args.hopsfs_namenode_ags_it, security_group_id = security_groups_ids)
         
         logger.info("Created the EC2 launch templates.")
     else:
@@ -722,6 +745,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-hfs-c-ags-it","--hopsfs-client-auto-scaling-group-instance-type", dest = "hopsfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS client auto-scaling group. Default: \"r5.4xlarge\"")
     parser.add_argument("-hfs-nn-ags-it","--hopsfs-namenode-auto-scaling-group-instance-type", dest = "hopsfs_namenode_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS NameNode auto-scaling group. Default: \"r5.4xlarge\"")
     parser.add_argument("--ssh-keypair-name", dest = "ssh_keypair_name", type = str, default = None, help = "The name of the SSH keypair registered with AWS. This MUST be specified when creating any EC2 VMs, as we must pass the name of the keypair to the EC2 API so that you will have SSH access to the virtual machines. There is no default value.")
+    parser.add_argument("--num-ndb-datanodes", dest = "num_ndb_datanodes", type = int, default = 4, help = "The number of MySQL NDB Data Nodes to create. Default: 4")
     
     # EKS.
     parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
@@ -752,6 +776,7 @@ def main():
     skip_iam_role_creation = command_line_args.skip_iam_role_creation
     eks_iam_role_name = command_line_args.eks_iam_role_name
     ssh_keypair_name = command_line_args.ssh_keypair_name
+    num_ndb_datanodes = command_line_args.num_ndb_datanodes
     
     if user_public_ip == "DEFAULT_VALUE":
         log_warning("Attempting to resolve your IP address automatically...")
@@ -988,16 +1013,69 @@ def main():
     
     logger.info("Creating EC2 launch templates and instance groups now.")
     
+    sec_grp_resp = ec2_client.describe_security_groups(
+        Filters = [{
+            'Name': 'vpc-id',
+            'Values': [vpc_id]   
+        }]
+    )
+    security_group_ids = []
+    for security_group in sec_grp_resp['SecurityGroups']:
+        security_group_id = security_group['GroupId']
+        security_group_ids.append(security_group_id)
+    
     create_launch_templates_and_instance_groups(
         ec2_client = ec2_client,
         autoscaling_client = autoscaling_client,
         vpc_id = vpc_id,
         command_line_args = command_line_args,
+        security_groups_ids = security_group_ids
     )
+    
+    # Get the subnet ID(s).
+    resp_subnet_ids = ec2_client.describe_subnets(
+        Filters = [{
+            'Name': 'vpc-id',
+            'Values': [vpc_id]   
+        }]
+    )
+    subnet_ids = []
+    public_subnet_ids = []
+    private_subnet_ids = []
+    for subnet in resp_subnet_ids['Subnets']:
+        subnet_id = subnet['SubnetId']
+        subnet_ids.append(subnet_id)
+        
+        for tag in subnet['Tags']:
+            if tag['Key'] == 'PrivacyType':
+                privacy_type:str = tag['Value']
+                
+                if privacy_type.strip().lower() == "private":
+                    private_subnet_ids.append(subnet_id)
+                    break 
+                elif privacy_type.strip().lower() == "public":
+                    public_subnet_ids.append(subnet_id)
+                    break 
+                else:
+                    log_error("Unexpected value found for \"PrivacyType\" tag for subnet \"%s\": %s" % (subnet_id, privacy_type))
+    
+    if len(subnet_ids) == 0:
+        log_error("Could not find any subnets within VPC %s." % vpc_id)
+        exit(1)
+    
+    if len(public_subnet_ids) == 0:
+        log_error("Could not find any public subnet IDs.")
+        log_error("Subnet IDs: %s" % str(subnet_ids))
+        exit(1)
+
+    if len(private_subnet_ids) == 0:
+        log_error("Could not find any public subnet IDs.")
+        log_error("Subnet IDs: %s" % str(subnet_ids))
+        exit(1)
     
     logger.info("Creating MySQL NDB Cluster now.")
     if not command_line_args.skip_ndb:
-        create_ndb(ec2_client = ec2_client, ssh_keypair_name = ssh_keypair_name)
+        create_ndb(ec2_client = ec2_client, ssh_keypair_name = ssh_keypair_name, num_datanodes = num_ndb_datanodes, security_group_ids = security_group_ids, subnet_id = public_subnet_ids[0])
     
     if command_line_args.create_lambda_fs_client_vm:
         logger.info("Creating λFS client virtual machine.")

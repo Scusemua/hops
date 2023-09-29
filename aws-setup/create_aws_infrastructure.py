@@ -1046,18 +1046,41 @@ def main():
         subnet_id = subnet['SubnetId']
         subnet_ids.append(subnet_id)
         
+        identified_privacy_type = False 
+        subnet_name = None 
         for tag in subnet['Tags']:
             if tag['Key'] == 'PrivacyType':
                 privacy_type:str = tag['Value']
                 
                 if privacy_type.strip().lower() == "private":
                     private_subnet_ids.append(subnet_id)
+                    identified_privacy_type = True
                     break 
                 elif privacy_type.strip().lower() == "public":
                     public_subnet_ids.append(subnet_id)
+                    identified_privacy_type = True 
                     break 
                 else:
                     log_error("Unexpected value found for \"PrivacyType\" tag for subnet \"%s\": %s" % (subnet_id, privacy_type))
+                    exit(1) 
+            elif tag['Key'] == 'Name':
+                subnet_name = tag['Value']
+        
+        # If they didn't have the 'PrivacyType' tag, then try to use their name.
+        if not identified_privacy_type:
+            if subnet_name is not None:
+                if "private" in subnet_name.strip().lower():
+                    private_subnet_ids.append(subnet_id)
+                    identified_privacy_type = True
+                elif "public" in subnet_name.strip().lower():
+                    public_subnet_ids.append(subnet_id)
+                    identified_privacy_type = True 
+                else:
+                    log_error("Could not identify privacy type of subnet %s (id=%s)" % (subnet_name, subnet_id))
+                    exit(1)
+            else:
+                log_error("Could not identify name or privacy type of subnet %s" % subnet_id)
+                exit(1)
     
     if len(subnet_ids) == 0:
         log_error("Could not find any subnets within VPC %s." % vpc_id)

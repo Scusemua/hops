@@ -604,10 +604,10 @@ def create_eks_openwhisk_cluster(
             'Values': [vpc_id]   
         }]
     )
-    security_groups_ids = []
+    security_group_ids = []
     for security_group in resp['SecurityGroups']:
         security_group_id = security_group['GroupId']
-        security_groups_ids.append(security_group_id)
+        security_group_ids.append(security_group_id)
     
     # Get the subnet ID(s).
     resp = ec2_client.describe_subnets(
@@ -628,7 +628,7 @@ def create_eks_openwhisk_cluster(
         roleArn = role_arn,         # The Amazon Resource Name (ARN) of the IAM role that provides permissions for the Kubernetes control plane to make calls to Amazon Web Services API operations on your behalf.
         resourcesVpcConfig = {      # The VPC configuration that’s used by the cluster control plane.
             "subnetIds": subnet_ids,
-            "securityGroupIds": security_groups_ids,
+            "securityGroupIds": security_group_ids,
             "endpointPublicAccess": True,
             "endpointPrivateAccess": False,
             "publicAccessCidrs": ["0.0.0.0/0"]
@@ -653,7 +653,6 @@ def create_eks_openwhisk_cluster(
 
 def create_ec2_auto_scaling_group(
     auto_scaling_group_name:str = "",
-    launch_configuration_name:str = "",
     launch_template_name:str = "",
     min_size:int = 0,
     max_size:int = 8,
@@ -672,7 +671,6 @@ def create_ec2_auto_scaling_group(
         
     response = autoscaling_client.create_auto_scaling_group(
         AutoScalingGroupName = auto_scaling_group_name,
-        LaunchConfigurationName = launch_configuration_name,
         LaunchTemplate = {
             'LaunchTemplateName': launch_template_name,
             'Version': '$Default',
@@ -689,7 +687,6 @@ def create_launch_template(
     launch_template_name:str = "",
     launch_template_description:str = "",
     ec2_client = None,
-    vpc_id:str = None,
     ami_id:str = "", 
     instance_type:str = "",
     security_group_ids:list = [],
@@ -705,21 +702,14 @@ def create_launch_template(
         LaunchTemplateName = launch_template_name,
         VersionDescription = launch_template_description,
         LaunchTemplateData = {
-            "ImageID": ami_id,
+            "ImageId": ami_id,
             "InstanceType": instance_type,
             "SecurityGroupIds": security_group_ids,
             "NetworkInterfaces": [{
                 'AssociatePublicIpAddress': True,
                 'DeviceIndex': 0,
             }]
-        },
-        TagSpecifications = [{
-            "ResourceType": "vpc",
-            "Tags": [{
-                "Key": "vpc",
-                "Value": vpc_id,
-            }]   
-        }]
+        }
     )
     
     logger.info("Response from creating launch template \"%s\": %s" % (launch_template_name, str(response)))
@@ -731,35 +721,37 @@ def create_launch_templates_and_instance_groups(
     lfs_client_ags_it:str = "r5.4xlarge",
     hopsfs_client_ags_it:str = "r5.4xlarge",
     hopsfs_namenode_ags_it:str = "r5.4xlarge",
-    security_groups_ids:list = []
+    skip_launch_templates:bool = False,
+    skip_autoscaling_groups:bool = False,
+    security_group_ids:list = []
 ):
     """
     Create the launch templates and auto-scaling groups for λFS clients, HopsFS clients, and HopsFS NameNodes.
     """
 
-    if not command_line_args.skip_launch_templates:
+    if not skip_launch_templates:
         logger.info("Creating the EC2 launch templates now.")
         
         # λFS clients.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = LAMBDA_FS_CLIENT_AMI, instance_type = lfs_client_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = LAMBDA_FS_CLIENT_AMI, instance_type = lfs_client_ags_it, security_group_ids = security_group_ids)
         # HopsFS clients.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = HOPSFS_CLIENT_AMI, instance_type = hopsfs_client_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = HOPSFS_CLIENT_AMI, instance_type = hopsfs_client_ags_it, security_group_ids = security_group_ids)
         # HopsFS NameNodes.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = HOPSFS_NAMENODE_AMI, instance_type = hopsfs_namenode_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = HOPSFS_NAMENODE_AMI, instance_type = hopsfs_namenode_ags_it, security_group_ids = security_group_ids)
         
         logger.info("Created the EC2 launch templates.")
     else:
         logger.info("Skipping the creation of the EC2 launch templates.")
     
-    if not command_line_args.skip_autoscaling_groups:
+    if not skip_autoscaling_groups:
         logger.info("Creating the EC2 auto-scaling groups now.")
         
         # λFS clients.
-        create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
+        create_ec2_auto_scaling_group(auto_scaling_group_name = "lambda_fs_clients_ags", autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
         # HopsFS clients.
-        create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "hopsfs_clients")
+        create_ec2_auto_scaling_group(auto_scaling_group_name = "hopsfs_clients_ags",autoscaling_client = autoscaling_client, launch_template_name = "hopsfs_clients")
         # HopsFS NameNodes.
-        create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "hopsfs_namenodes")
+        create_ec2_auto_scaling_group(auto_scaling_group_name = "hopsfs_namenodes_ags",autoscaling_client = autoscaling_client, launch_template_name = "hopsfs_namenodes")
         
         logger.info("Created the EC2 auto-scaling groups.")
     else:
@@ -905,6 +897,8 @@ def main():
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
             skip_eks = arguments.get("skip_eks", False)
             skip_ndb = arguments.get("skip_ndb", False)
+            skip_launch_templates = arguments.get("skip_launch_templates", False)
+            skip_autoscaling_groups = arguments.get("skip_autoscaling_groups", False)
     else:
         NO_COLOR = command_line_args.no_color
         aws_profile_name = command_line_args.aws_profile
@@ -930,6 +924,8 @@ def main():
         hopsfs_client_vm_instance_type = command_line_args.hopsfs_client_vm_instance_type
         skip_ndb = command_line_args.skip_ndb
         create_lambda_fs_client_vm = command_line_args.create_lambda_fs_client_vm
+        skip_launch_templates = command_line_args.skip_launch_templates
+        skip_autoscaling_groups = command_line_args.skip_autoscaling_groups
     
     if user_public_ip == "DEFAULT_VALUE":
         log_warning("Attempting to resolve your IP address automatically...")
@@ -1182,11 +1178,12 @@ def main():
         ec2_client = ec2_client,
         autoscaling_client = autoscaling_client,
         vpc_id = vpc_id,
-        command_line_args = command_line_args,
-        security_groups_ids = security_group_ids,
+        security_group_ids = security_group_ids,
         lfs_client_ags_it = lfs_client_ags_it,
         hopsfs_client_ags_it = hopsfs_client_ags_it,
         hopsfs_namenode_ags_it = hopsfs_namenode_ags_it,
+        skip_launch_templates = skip_launch_templates,
+        skip_autoscaling_groups = skip_autoscaling_groups,
     )
     
     # Get the subnet ID(s).

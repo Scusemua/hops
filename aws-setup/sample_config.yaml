@@ -1,0 +1,30 @@
+no_color: False
+aws_profile: <FILL THIS IN>
+aws_region: "us-east-1"
+user_public_ip: "DEFAULT_VALUE"
+vpc_name: "LambdaFS_VPC"
+
+security_group_name: "lambda-fs-security-group"
+eks_cluster_name : "lambda-fs-eks-cluster"
+eks_iam_role_name: "lambda-fs-eks-cluster-role"
+
+ssh_keypair_name: <FILL THIS IN>
+num_ndb_datanodes: 4
+
+lfs_client_autoscaling_group_instance_type: "r5.4xlarge"
+hopsfs_client_autoscaling_group_instance_type: "r5.4xlarge"
+hopsfs_namenode_autoscaling_group_instance_type: "r5.4xlarge"
+lfs_client_vm_instance_type: "r5.4xlarge"
+ndb_manager_instance_type: "r5.4xlarge"
+ndb_datanode_instance_type: "r5.4xlarge"
+lambdafs_zk_instance_type: "r5.4xlarge"
+hopsfs_client_vm_instance_type: "r5.4xlarge"
+
+create_lambda_fs_client_vm: True
+
+skip_iam_role_creation: False
+skip_vpc_creation: False
+skip_eks: False
+skip_ndb: False
+skip_launch_templates: False
+skip_autoscaling_groups: False

@@ -8,6 +8,7 @@ import requests
 import socket 
 import time 
 import urllib3
+import yaml 
 
 from time import sleep
 from tqdm import tqdm
@@ -44,6 +45,8 @@ LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
 #   X - EKS cluster.
 #   - NDB cluster.
 #   - Deploy OpenWhisk.
+#
+# - Make it so you can use YAML instead to pass everything in. 
 #
 # - Script to delete everything. 
     # - Delete NAT gateway.
@@ -365,13 +368,14 @@ def create_vpc(
     # }
     
 def create_lambda_fs_client_vm(
-    ec2_client = None,
+    ec2_resource = None,
+    instance_type:str = None,
     ssh_keypair_name:str = None,
 ):
     """
     Create the λFS client VM. Once created, this script should be executed from the λFS client VM to create the remaining AWS infrastructure.
     """
-    if ec2_client is None:
+    if ec2_resource is None:
         log_error("EC2 client cannot be null when creating the λFS client VM.")
         exit(1)
     
@@ -380,37 +384,122 @@ def create_lambda_fs_client_vm(
         exit(1)
 
 def create_ndb(
-    ec2_client = None,
+    ec2_resource = None,
     ssh_keypair_name:str = None,
     num_datanodes:int = 4,
     subnet_id:str = None,
+    ndb_manager_instance_type:str = "r5.4xlarge",
+    ndb_datanode_instance_type:str = "r5.4xlarge",
     security_group_ids = [],
-):
+): 
     """
     Create the required AWS infrastructure for the MySQL NDB cluster. 
     
     This includes a total of 5 EC2 VMs: one NDB "master" node and four NDB data nodes.
     """
-    if ec2_client is None:
-        log_error("EC2 client cannot be null when creating the NDB cluster.")
+    if ec2_resource is None:
+        log_error("EC2 resource cannot be null when creating the NDB cluster.")
         exit(1)
     
     if ssh_keypair_name is None:
         log_error("SSH keypair name cannot be null when creating the NDB cluster.")
         exit(1)
         
+    
+    logger.info("Creating 1 MySQL NDB Manager Node.")
+    
     # Create the NDB manager server.
-    ndb_manager_instance = ec2_client.create_instances(
+    ndb_manager_instance = ec2_resource.create_instances(
         MinCount = 1,
         MaxCount = 1,
         ImageId = MYSQL_NDB_MANAGER_AMI,
-        InstanceType = "",
+        InstanceType = ndb_manager_instance_type,
         KeyName = ssh_keypair_name,
         SecurityGroupIds = security_group_ids,
         SubnetId=subnet_id,
+        NetworkInterfaces = [{
+            "AssociatePublicIpAddress": True,
+            "DeviceIndex": 0,
+            "SubnetId": subnet_id
+        }]
     )
+    logger.info("Response: %s" % str(ndb_manager_instance))
     
-    # Create `num_datanodes` NDB data nodes.
+    num_type_1_datanodes = num_datanodes // 2
+    if num_datanodes % 2 == 0:
+        num_type_2_datanodes = num_type_1_datanodes
+    else:
+        num_type_2_datanodes = num_type_1_datanodes+1 
+        
+    logger.info("Creating %d type 1 NDB data node(s) and %d type 2 NDB data node(s)." % (num_type_1_datanodes, num_type_2_datanodes))
+    
+    type1_datanodes = []
+    type2_datanodes = []
+    datanodes = [] 
+    
+    logger.info("Creating %d Type 1 MySQL NDB Data Node(s)." % num_type_1_datanodes)
+    
+    ndb_datanode_index = 0
+    for _ in range(0, num_type_1_datanodes):
+        instance_name = "ndb-datanode-type1-%d" % ndb_datanode_index
+        ndb_datanode_index += 1
+        # Create `num_datanodes` NDB data nodes.
+        type1_datanode = ec2_resource.create_instances(
+            MinCount = 1,
+            MaxCount = 1,
+            ImageId = MYSQL_NDB_MANAGER_AMI,
+            InstanceType = ndb_datanode_instance_type,
+            KeyName = ssh_keypair_name,
+            SecurityGroupIds = security_group_ids,
+            SubnetId=subnet_id,
+            NetworkInterfaces = [{
+                "AssociatePublicIpAddress": True,
+                "DeviceIndex": 0,
+                "SubnetId": subnet_id  
+            }],
+            TagSpecifications=[{
+                'ResourceType': 'instance',
+                'Tags': [{
+                        'Key': 'Name',
+                        'Value': instance_name
+                }]
+            }]   
+        ) # end of call to ec2_client.create_instances()
+        type1_datanodes.append(type1_datanode)
+        datanodes.append(type1_datanode)
+        logger.info("Response: %s" % str(type1_datanode))
+    
+    logger.info("Creating %d Type 2 MySQL NDB Data Node(s)." % num_type_2_datanodes)
+    
+    for _ in range(0, num_type_2_datanodes):
+        instance_name = "ndb-datanode-type2-%d" % ndb_datanode_index
+        ndb_datanode_index += 1
+        type2_datanode = ec2_resource.create_instances(
+            MinCount = num_type_2_datanodes,
+            MaxCount = num_type_2_datanodes,
+            ImageId = MYSQL_NDB_MANAGER_AMI,
+            InstanceType = ndb_datanode_instance_type,
+            KeyName = ssh_keypair_name,
+            SecurityGroupIds = security_group_ids,
+            SubnetId=subnet_id,
+            NetworkInterfaces = [{
+                "AssociatePublicIpAddress": True,
+                "DeviceIndex": 0,
+                "SubnetId": subnet_id
+            }],
+            TagSpecifications=[{
+                'ResourceType': 'instance',
+                'Tags': [{
+                        'Key': 'Name',
+                        'Value': instance_name
+                }]
+            }], 
+        ) # end of call to ec2_client.create_instances()
+        type2_datanodes.append(type2_datanode)
+        datanodes.append(type2_datanode)
+        logger.info("Response: %s" % str(type2_datanode))
+    
+    logger.info("Created NDB EC2 instances.")
 
 def create_eks_iam_role(iam, iam_role_name:str = "lambda-fs-eks-cluster-role") -> str:
     """
@@ -639,7 +728,9 @@ def create_launch_templates_and_instance_groups(
     ec2_client = None,
     autoscaling_client = None,
     vpc_id:str = None,
-    command_line_args:argparse.Namespace = None,
+    lfs_client_ags_it:str = "r5.4xlarge",
+    hopsfs_client_ags_it:str = "r5.4xlarge",
+    hopsfs_namenode_ags_it:str = "r5.4xlarge",
     security_groups_ids:list = []
 ):
     """
@@ -650,11 +741,11 @@ def create_launch_templates_and_instance_groups(
         logger.info("Creating the EC2 launch templates now.")
         
         # λFS clients.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = LAMBDA_FS_CLIENT_AMI, instance_type = command_line_args.lfs_client_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = LAMBDA_FS_CLIENT_AMI, instance_type = lfs_client_ags_it, security_group_id = security_groups_ids)
         # HopsFS clients.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = HOPSFS_CLIENT_AMI, instance_type = command_line_args.hopsfs_client_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = HOPSFS_CLIENT_AMI, instance_type = hopsfs_client_ags_it, security_group_id = security_groups_ids)
         # HopsFS NameNodes.
-        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = HOPSFS_NAMENODE_AMI, instance_type = command_line_args.hopsfs_namenode_ags_it, security_group_id = security_groups_ids)
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = HOPSFS_NAMENODE_AMI, instance_type = hopsfs_namenode_ags_it, security_group_id = security_groups_ids)
         
         logger.info("Created the EC2 launch templates.")
     else:
@@ -687,6 +778,7 @@ def validate_keypair_exists(ssh_keypair_name = None, ec2_client = None)->bool:
     WARNING: Terminates/aborts if the ec2_client or ssh_keypair_name parameter is null!
     """
     if ssh_keypair_name is None:
+        print()
         log_error("No SSH keypair specified (value is null).")
         exit(1)
     
@@ -715,6 +807,9 @@ def get_args() -> argparse.Namespace:
     Parse the commandline arguments.
     """
     parser = argparse.ArgumentParser()
+    
+    # YAML
+    parser.add_argument("-y", "--yaml", type = str, default = None, help = "The path of a YAML configuration file, which can be used in-place of command-line arguments. If nothing is passed for this, then command-line arguments will be used. If a YAML file is passed, then command-line arguments for properties that CAN be defined in YAML will be ignored (even if you did not define them in the YAML file).")
     
     # Which resources to create.
     parser.add_argument("--create-lfs-client-vm", dest = "create_lambda_fs_client_vm", action = "store_true", help = "If passed, then ONLY create the Client VM for λFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
@@ -746,6 +841,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-hfs-nn-ags-it","--hopsfs-namenode-auto-scaling-group-instance-type", dest = "hopsfs_namenode_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS NameNode auto-scaling group. Default: \"r5.4xlarge\"")
     parser.add_argument("--ssh-keypair-name", dest = "ssh_keypair_name", type = str, default = None, help = "The name of the SSH keypair registered with AWS. This MUST be specified when creating any EC2 VMs, as we must pass the name of the keypair to the EC2 API so that you will have SSH access to the virtual machines. There is no default value.")
     parser.add_argument("--num-ndb-datanodes", dest = "num_ndb_datanodes", type = int, default = 4, help = "The number of MySQL NDB Data Nodes to create. Default: 4")
+    parser.add_argument("--ndb-manager-node-instance-type", dest = "ndb_manager_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the MySQL NDB Manager Node. Default: \"r5.4xlarge\"")
+    parser.add_argument("--ndb-data-node-instance-type", dest = "ndb_datanode_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the MySQL NDB Data Node(s). Default: \"r5.4xlarge\"")
+    parser.add_argument("--lambdafs-zk-instance-type", dest = "lambdafs_zk_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the LambdaFS ZooKeeper node(s) instance type.")
+    parser.add_argument("--lambdafs-client-vm-instance-type", dest = "lfs_client_vm_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the 'primary' λFS client VM, which also doubles as the experiment driver. Default: \"r5.4xlarge\"")
+    parser.add_argument("--hopsfs-client-vm-instance-type", dest = "hopsfs_client_vm_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the 'primary' HopsFS client VM, which also doubles as the experiment driver. Default: \"r5.4xlarge\"")
     
     # EKS.
     parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
@@ -765,18 +865,71 @@ def main():
     
     # time.sleep(0.125)
     
-    NO_COLOR = command_line_args.no_color
-    aws_profile_name = command_line_args.aws_profile
-    aws_region = command_line_args.aws_region
-    user_public_ip = command_line_args.user_public_ip
-    vpc_name = command_line_args.vpc_name
-    vpc_cidr_block = "10.0.0.0/16" # command_line_args.vpc_cidr_block
-    security_group_name = command_line_args.security_group_name
-    eks_cluster_name = command_line_args.eks_cluster_name 
-    skip_iam_role_creation = command_line_args.skip_iam_role_creation
-    eks_iam_role_name = command_line_args.eks_iam_role_name
-    ssh_keypair_name = command_line_args.ssh_keypair_name
-    num_ndb_datanodes = command_line_args.num_ndb_datanodes
+    if command_line_args.yaml is not None:
+        with open(command_line_args.yaml, "r") as stream:
+            logger.info("Loading arguments from YAML file located at \"%s\"" % command_line_args.yaml)
+            try:
+                arguments = yaml.safe_load(stream)
+                log_success("Loaded %s arguments from YAML file." % len(arguments))
+            except yaml.YAMLError as exc:
+                log_error("Failed to load arguments from YAML file \"%s\"." % command_line_args.yaml)
+                log_error("Error: %s" % str(exc))
+                exit(1) 
+            
+            NO_COLOR = arguments.get("no_color", False)
+            aws_profile_name = arguments.get("aws_profile", None)
+            aws_region = arguments.get("aws_region", "us-east-1")
+            user_public_ip = arguments.get("user_public_ip", "DEFAULT_VALUE")
+            vpc_name = arguments.get("vpc_name", "LambdaFS_VPC")
+            vpc_cidr_block = "10.0.0.0/16" 
+            
+            security_group_name = arguments.get("security_group_name", "lambda-fs-security-group")
+            eks_cluster_name = arguments.get("eks_cluster_name ", "lambda-fs-eks-cluster")
+            eks_iam_role_name = arguments.get("eks_iam_role_name", "lambda-fs-eks-cluster-role")
+            
+            ssh_keypair_name = arguments.get("ssh_keypair_name", None)
+            num_ndb_datanodes = arguments.get("num_ndb_datanodes", 4)
+            
+            lfs_client_ags_it = arguments.get("lfs_client_autoscaling_group_instance_type", "r5.4xlarge")
+            hopsfs_client_ags_it = arguments.get("hopsfs_client_autoscaling_group_instance_type", "r5.4xlarge")
+            hopsfs_namenode_ags_it = arguments.get("hopsfs_namenode_autoscaling_group_instance_type", "r5.4xlarge")
+            lfs_client_vm_instance_type = arguments.get("lfs_client_vm_instance_type", "r5.4xlarge")
+            ndb_manager_instance_type = arguments.get("ndb_manager_instance_type", "r5.4xlarge")
+            ndb_datanode_instance_type = arguments.get("ndb_datanode_instance_type", "r5.4xlarge")
+            lambdafs_zk_instance_type = arguments.get("lambdafs_zk_instance_type", "r5.4xlarge")
+            hopsfs_client_vm_instance_type = arguments.get("hopsfs_client_vm_instance_type", "r5.4xlarge")
+            
+            create_lambda_fs_client_vm = arguments.get("create_lambda_fs_client_vm", True)
+            
+            skip_iam_role_creation = arguments.get("skip_iam_role_creation", False)
+            skip_vpc_creation = arguments.get("skip_vpc_creation", False)
+            skip_eks = arguments.get("skip_eks", False)
+            skip_ndb = arguments.get("skip_ndb", False)
+    else:
+        NO_COLOR = command_line_args.no_color
+        aws_profile_name = command_line_args.aws_profile
+        aws_region = command_line_args.aws_region
+        user_public_ip = command_line_args.user_public_ip
+        vpc_name = command_line_args.vpc_name
+        vpc_cidr_block = "10.0.0.0/16" # command_line_args.vpc_cidr_block
+        security_group_name = command_line_args.security_group_name
+        eks_cluster_name = command_line_args.eks_cluster_name 
+        skip_iam_role_creation = command_line_args.skip_iam_role_creation
+        eks_iam_role_name = command_line_args.eks_iam_role_name
+        ssh_keypair_name = command_line_args.ssh_keypair_name
+        num_ndb_datanodes = command_line_args.num_ndb_datanodes
+        ndb_manager_instance_type = command_line_args.ndb_manager_instance_type
+        ndb_datanode_instance_type = command_line_args.ndb_datanode_instance_type
+        lambdafs_zk_instance_type = command_line_args.lambdafs_zk_instance_type
+        skip_vpc_creation = command_line_args.skip_vpc_creation
+        skip_eks = command_line_args.skip_eks
+        lfs_client_ags_it = command_line_args.lfs_client_ags_it
+        hopsfs_client_ags_it = command_line_args.hopsfs_client_ags_it
+        hopsfs_namenode_ags_it = command_line_args.hopsfs_namenode_ags_it
+        lfs_client_vm_instance_type = command_line_args.lfs_client_vm_instance_type
+        hopsfs_client_vm_instance_type = command_line_args.hopsfs_client_vm_instance_type
+        skip_ndb = command_line_args.skip_ndb
+        create_lambda_fs_client_vm = command_line_args.create_lambda_fs_client_vm
     
     if user_public_ip == "DEFAULT_VALUE":
         log_warning("Attempting to resolve your IP address automatically...")
@@ -817,7 +970,7 @@ def main():
     logger.info("Your IP address: \"%s\"" % user_public_ip)
     print()
     # time.sleep(0.125)
-    if not command_line_args.skip_vpc_creation:
+    if not skip_vpc_creation:
         logger.info("Create VPC: TRUE")
         if len(vpc_name) == 0:
             log_error("Invalid VPC name specified. VPC name must ")
@@ -829,7 +982,7 @@ def main():
     
     print()
     # time.sleep(0.125)
-    if not command_line_args.skip_eks:
+    if not skip_eks:
         logger.info("Create AWS EKS cluster: TRUE")
         logger.info("New AWS EKS cluster name: \"%s\"" % eks_cluster_name)
     else:
@@ -845,9 +998,9 @@ def main():
         logger.info("Existing IAM role name: \"%s\"" % eks_iam_role_name)
     
     print()
-    logger.info("λFS client auto-scaling group instance type: %s", command_line_args.lfs_client_ags_it)
-    logger.info("HopsFS client auto-scaling group instance type: %s", command_line_args.hopsfs_client_ags_it)
-    logger.info("HopsFS NameNode auto-scaling group instance type: %s", command_line_args.hopsfs_namenode_ags_it)
+    logger.info("λFS client auto-scaling group instance type: %s", lfs_client_ags_it)
+    logger.info("HopsFS client auto-scaling group instance type: %s", hopsfs_client_ags_it)
+    logger.info("HopsFS NameNode auto-scaling group instance type: %s", hopsfs_namenode_ags_it)
     
     print()
     logger.info("SSH Keypair Name: %s" % ssh_keypair_name)
@@ -869,11 +1022,6 @@ def main():
             exit(0)
         else:
             log_error("Please enter \"y\" for yes or \"n\" for no. You entered: \"%s\"" % proceed)
-   
-    if not validate_keypair_exists(ssh_keypair_name = ssh_keypair_name, ec2_client = ec2_client):
-        log_error("Could not find SSH keypair named \"%s\" registered with AWS." % ssh_keypair_name)
-        log_error("Please verify that the given keypair exists, is registered with AWS, and has no typos in its name.")
-        exit(1)
     
     session:boto3.Session = None 
     if aws_profile_name is not None:
@@ -892,8 +1040,13 @@ def main():
         ec2_resource = boto3.resource('ec2', region_name = aws_region)
         autoscaling_client = boto3.client("autoscaling", region_name = aws_region)
 
+    if not validate_keypair_exists(ssh_keypair_name = ssh_keypair_name, ec2_client = ec2_client):
+        log_error("Could not find SSH keypair named \"%s\" registered with AWS." % ssh_keypair_name)
+        log_error("Please verify that the given keypair exists, is registered with AWS, and has no typos in its name.")
+        exit(1)
+
     vpc_id:str = None 
-    if not command_line_args.skip_vpc_creation:
+    if not skip_vpc_creation:
         logger.info("Creating Virtual Private Cloud now.")
         vpc_id = create_vpc(
             aws_region = aws_region,
@@ -1000,16 +1153,17 @@ def main():
             
     log_success("Resolved VPC ID of VPC \"%s\" as %s" % (vpc_name, vpc_id))
         
-    create_eks_openwhisk_cluster(
-        aws_profile_name = aws_profile_name, 
-        aws_region = aws_region, 
-        vpc_id = vpc_id,
-        vpc_name = vpc_name,
-        eks_cluster_name = eks_cluster_name,
-        ec2_client = ec2_client,
-        create_eks_iam_role = not skip_iam_role_creation,
-        eks_iam_role_name = eks_iam_role_name,
-    )
+    if not skip_eks:
+        create_eks_openwhisk_cluster(
+            aws_profile_name = aws_profile_name, 
+            aws_region = aws_region, 
+            vpc_id = vpc_id,
+            vpc_name = vpc_name,
+            eks_cluster_name = eks_cluster_name,
+            ec2_client = ec2_client,
+            create_eks_iam_role = not skip_iam_role_creation,
+            eks_iam_role_name = eks_iam_role_name,
+        )
     
     logger.info("Creating EC2 launch templates and instance groups now.")
     
@@ -1029,7 +1183,10 @@ def main():
         autoscaling_client = autoscaling_client,
         vpc_id = vpc_id,
         command_line_args = command_line_args,
-        security_groups_ids = security_group_ids
+        security_groups_ids = security_group_ids,
+        lfs_client_ags_it = lfs_client_ags_it,
+        hopsfs_client_ags_it = hopsfs_client_ags_it,
+        hopsfs_namenode_ags_it = hopsfs_namenode_ags_it,
     )
     
     # Get the subnet ID(s).
@@ -1097,12 +1254,19 @@ def main():
         exit(1)
     
     logger.info("Creating MySQL NDB Cluster now.")
-    if not command_line_args.skip_ndb:
-        create_ndb(ec2_client = ec2_client, ssh_keypair_name = ssh_keypair_name, num_datanodes = num_ndb_datanodes, security_group_ids = security_group_ids, subnet_id = public_subnet_ids[0])
+    if not skip_ndb:
+        create_ndb(
+            ec2_resource = ec2_resource, 
+            ssh_keypair_name = ssh_keypair_name, 
+            num_datanodes = num_ndb_datanodes, 
+            security_group_ids = security_group_ids,
+            subnet_id = public_subnet_ids[0],
+            ndb_manager_instance_type = ndb_manager_instance_type,
+            ndb_datanode_instance_type = ndb_datanode_instance_type)
     
-    if command_line_args.create_lambda_fs_client_vm:
+    if create_lambda_fs_client_vm:
         logger.info("Creating λFS client virtual machine.")
-        success = create_lambda_fs_client_vm(ec2_client = ec2_client, ssh_keypair_name = ssh_keypair_name)
+        success = create_lambda_fs_client_vm(ec2_resource = ec2_resource, ssh_keypair_name = ssh_keypair_name, instance_type = lfs_client_vm_instance_type)
         
         if not success:
             log_error("Failed to create the λFS client virtual machine.")

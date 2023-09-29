@@ -396,6 +396,11 @@ def create_ndb(
     Create the required AWS infrastructure for the MySQL NDB cluster. 
     
     This includes a total of 5 EC2 VMs: one NDB "master" node and four NDB data nodes.
+    
+    Returns a dictionary {
+        "manager-node-id": the ID of the manager node VM
+        "data-node-ids": list of IDs of the data node VMs
+    }
     """
     if ec2_resource is None:
         log_error("EC2 resource cannot be null when creating the NDB cluster.")
@@ -415,15 +420,20 @@ def create_ndb(
         ImageId = MYSQL_NDB_MANAGER_AMI,
         InstanceType = ndb_manager_instance_type,
         KeyName = ssh_keypair_name,
-        SecurityGroupIds = security_group_ids,
-        SubnetId=subnet_id,
         NetworkInterfaces = [{
             "AssociatePublicIpAddress": True,
             "DeviceIndex": 0,
-            "SubnetId": subnet_id
-        }]
+            "SubnetId": subnet_id,
+                "Groups": security_group_ids
+        }],
+        TagSpecifications=[{
+            'ResourceType': 'instance',
+            'Tags': [{
+                    'Key': 'Name',
+                    'Value': "ndb-manager-node"
+            }]
+        }]  
     )
-    logger.info("Response: %s" % str(ndb_manager_instance))
     
     num_type_1_datanodes = num_datanodes // 2
     if num_datanodes % 2 == 0:
@@ -450,12 +460,11 @@ def create_ndb(
             ImageId = MYSQL_NDB_MANAGER_AMI,
             InstanceType = ndb_datanode_instance_type,
             KeyName = ssh_keypair_name,
-            SecurityGroupIds = security_group_ids,
-            SubnetId=subnet_id,
             NetworkInterfaces = [{
                 "AssociatePublicIpAddress": True,
                 "DeviceIndex": 0,
-                "SubnetId": subnet_id  
+                "SubnetId": subnet_id,
+                "Groups": security_group_ids
             }],
             TagSpecifications=[{
                 'ResourceType': 'instance',
@@ -465,9 +474,8 @@ def create_ndb(
                 }]
             }]   
         ) # end of call to ec2_client.create_instances()
-        type1_datanodes.append(type1_datanode)
-        datanodes.append(type1_datanode)
-        logger.info("Response: %s" % str(type1_datanode))
+        type1_datanodes.append(type1_datanode[0].id)
+        datanodes.append(type1_datanode[0].id)
     
     logger.info("Creating %d Type 2 MySQL NDB Data Node(s)." % num_type_2_datanodes)
     
@@ -475,17 +483,16 @@ def create_ndb(
         instance_name = "ndb-datanode-type2-%d" % ndb_datanode_index
         ndb_datanode_index += 1
         type2_datanode = ec2_resource.create_instances(
-            MinCount = num_type_2_datanodes,
-            MaxCount = num_type_2_datanodes,
+            MinCount = 1,
+            MaxCount = 1,
             ImageId = MYSQL_NDB_MANAGER_AMI,
             InstanceType = ndb_datanode_instance_type,
             KeyName = ssh_keypair_name,
-            SecurityGroupIds = security_group_ids,
-            SubnetId=subnet_id,
             NetworkInterfaces = [{
                 "AssociatePublicIpAddress": True,
                 "DeviceIndex": 0,
-                "SubnetId": subnet_id
+                "SubnetId": subnet_id,
+                "Groups": security_group_ids
             }],
             TagSpecifications=[{
                 'ResourceType': 'instance',
@@ -495,11 +502,15 @@ def create_ndb(
                 }]
             }], 
         ) # end of call to ec2_client.create_instances()
-        type2_datanodes.append(type2_datanode)
-        datanodes.append(type2_datanode)
-        logger.info("Response: %s" % str(type2_datanode))
+        type2_datanodes.append(type2_datanode[0].id)
+        datanodes.append(type2_datanode[0].id)
     
     logger.info("Created NDB EC2 instances.")
+    logger.info("Created 1 NDB Manager Node and %d NDB DataNode(s)." % len(datanodes))
+    return {
+        "manager-node-id": ndb_manager_instance[0].id,
+        "data-node-ids": datanodes
+    }
 
 def create_eks_iam_role(iam, iam_role_name:str = "lambda-fs-eks-cluster-role") -> str:
     """
@@ -857,7 +868,10 @@ def main():
     
     # time.sleep(0.125)
     
+    using_yaml = False 
+    
     if command_line_args.yaml is not None:
+        using_yaml = True 
         with open(command_line_args.yaml, "r") as stream:
             logger.info("Loading arguments from YAML file located at \"%s\"" % command_line_args.yaml)
             try:
@@ -891,7 +905,7 @@ def main():
             lambdafs_zk_instance_type = arguments.get("lambdafs_zk_instance_type", "r5.4xlarge")
             hopsfs_client_vm_instance_type = arguments.get("hopsfs_client_vm_instance_type", "r5.4xlarge")
             
-            create_lambda_fs_client_vm = arguments.get("create_lambda_fs_client_vm", True)
+            do_create_lambda_fs_client_vm = arguments.get("create_lambda_fs_client_vm", True)
             
             skip_iam_role_creation = arguments.get("skip_iam_role_creation", False)
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
@@ -923,7 +937,7 @@ def main():
         lfs_client_vm_instance_type = command_line_args.lfs_client_vm_instance_type
         hopsfs_client_vm_instance_type = command_line_args.hopsfs_client_vm_instance_type
         skip_ndb = command_line_args.skip_ndb
-        create_lambda_fs_client_vm = command_line_args.create_lambda_fs_client_vm
+        do_create_lambda_fs_client_vm = command_line_args.create_lambda_fs_client_vm
         skip_launch_templates = command_line_args.skip_launch_templates
         skip_autoscaling_groups = command_line_args.skip_autoscaling_groups
     
@@ -960,48 +974,49 @@ def main():
     log_important("Please verify that the following information is correct before continuing.")
     print()
     
-    # time.sleep(0.125)
-    
-    logger.info("Selected AWS region: \"%s\"" % aws_region)
-    logger.info("Your IP address: \"%s\"" % user_public_ip)
-    print()
-    # time.sleep(0.125)
-    if not skip_vpc_creation:
-        logger.info("Create VPC: TRUE")
-        if len(vpc_name) == 0:
-            log_error("Invalid VPC name specified. VPC name must ")
-        logger.info("New VPC name: \"%s\"" % vpc_name)
-        logger.info("VPC IPv4 CIDR block: \"%s\"" % vpc_cidr_block)
+    if using_yaml:
+        for arg_name, arg_value in arguments.items():
+            logger.info("{:50s}= \"{}\"".format(arg_name, str(arg_value)))
     else:
-        logger.info("Create VPC: FALSE")
-        logger.info("Existing VPC name: \"%s\"" % vpc_name)
+        for arg in vars(command_line_args):
+            logger.info("{:50s}= \"{}\"".format(arg, str(getattr(command_line_args, arg))))
+            
+    # logger.info("Selected AWS region: \"%s\"" % aws_region)
+    # logger.info("Your IP address: \"%s\"" % user_public_ip)
+    # print()
+    # if not skip_vpc_creation:
+    #     logger.info("Create VPC: TRUE")
+    #     if len(vpc_name) == 0:
+    #         log_error("Invalid VPC name specified. VPC name must ")
+    #     logger.info("New VPC name: \"%s\"" % vpc_name)
+    #     logger.info("VPC IPv4 CIDR block: \"%s\"" % vpc_cidr_block)
+    # else:
+    #     logger.info("Create VPC: FALSE")
+    #     logger.info("Existing VPC name: \"%s\"" % vpc_name)
     
-    print()
-    # time.sleep(0.125)
-    if not skip_eks:
-        logger.info("Create AWS EKS cluster: TRUE")
-        logger.info("New AWS EKS cluster name: \"%s\"" % eks_cluster_name)
-    else:
-        logger.info("Create AWS EKS cluster: FALSE")
-        logger.info("Existing AWS EKS cluster name: \"%s\"" % eks_cluster_name)
+    # print()
+    # if not skip_eks:
+    #     logger.info("Create AWS EKS cluster: TRUE")
+    #     logger.info("New AWS EKS cluster name: \"%s\"" % eks_cluster_name)
+    # else:
+    #     logger.info("Create AWS EKS cluster: FALSE")
+    #     logger.info("Existing AWS EKS cluster name: \"%s\"" % eks_cluster_name)
     
-    print()
-    if not skip_iam_role_creation:
-        logger.info("Create AWS EKS cluster IAM role: TRUE")
-        logger.info("New IAM role name: \"%s\"" % eks_iam_role_name)
-    else:
-        logger.info("Create AWS EKS cluster IAM role: FALSE")
-        logger.info("Existing IAM role name: \"%s\"" % eks_iam_role_name)
+    # print()
+    # if not skip_iam_role_creation:
+    #     logger.info("Create AWS EKS cluster IAM role: TRUE")
+    #     logger.info("New IAM role name: \"%s\"" % eks_iam_role_name)
+    # else:
+    #     logger.info("Create AWS EKS cluster IAM role: FALSE")
+    #     logger.info("Existing IAM role name: \"%s\"" % eks_iam_role_name)
     
-    print()
-    logger.info("λFS client auto-scaling group instance type: %s", lfs_client_ags_it)
-    logger.info("HopsFS client auto-scaling group instance type: %s", hopsfs_client_ags_it)
-    logger.info("HopsFS NameNode auto-scaling group instance type: %s", hopsfs_namenode_ags_it)
+    # print()
+    # logger.info("λFS client auto-scaling group instance type: %s", lfs_client_ags_it)
+    # logger.info("HopsFS client auto-scaling group instance type: %s", hopsfs_client_ags_it)
+    # logger.info("HopsFS NameNode auto-scaling group instance type: %s", hopsfs_namenode_ags_it)
     
-    print()
-    logger.info("SSH Keypair Name: %s" % ssh_keypair_name)
-    
-    # time.sleep(0.125)
+    # print()
+    # logger.info("SSH Keypair Name: %s" % ssh_keypair_name)
     
     # Give the user a chance to verify that the information they specified is correct.
     while True:
@@ -1261,7 +1276,7 @@ def main():
             ndb_manager_instance_type = ndb_manager_instance_type,
             ndb_datanode_instance_type = ndb_datanode_instance_type)
     
-    if create_lambda_fs_client_vm:
+    if do_create_lambda_fs_client_vm:
         logger.info("Creating λFS client virtual machine.")
         success = create_lambda_fs_client_vm(ec2_resource = ec2_resource, ssh_keypair_name = ssh_keypair_name, instance_type = lfs_client_vm_instance_type)
         

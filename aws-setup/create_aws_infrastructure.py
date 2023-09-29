@@ -25,11 +25,11 @@ This script should be executed from
 # TODO:
 # - Create L-FS infrastrucutre.
 #   - Client VM (or will this script be executed from that VM).
-#   - Client auto-scaling group.
+#   X - Client auto-scaling group.
 #   - ZooKeeper nodes. 
 # - Create HopsFS infrastrucutre.
 #   - Client VM.
-#   - Client auto-scaling group.
+#   X - Client auto-scaling group.
 #   - NameNode auto-scaling group.
 # - Create shared infrastrucutre.
 #   X - Create VPC.
@@ -584,7 +584,55 @@ def create_launch_template(
 #     Create the EC2 auto-scaling group for the HopsFS NameNodes.
 #     """
 #     pass 
+
+def create_launch_templates_and_instance_groups(
+    ec2_client = None,
+    autoscaling_client = None,
+    vpc_id:str = None,
+    command_line_args:argparse.Namespace = None
+):
+    """
+    Create the launch templates and auto-scaling groups for λFS clients, HopsFS clients, and HopsFS NameNodes.
+    """
+    resp = ec2_client.describe_security_groups(
+        Filters = [{
+            'Name': 'vpc-id',
+            'Values': [vpc_id]   
+        }]
+    )
+    security_groups_ids = []
+    for security_group in resp['SecurityGroups']:
+        security_group_id = security_group['GroupId']
+        security_groups_ids.append(security_group_id)
+
+    if not command_line_args.skip_launch_templates:
+        logger.info("Creating the EC2 launch templates now.")
+        
+        # λFS clients.
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = "ami-027b04d5fece878a8", instance_type = command_line_args.lfs_client_ags_it, security_group_id = security_groups_ids)
+        # HopsFS clients.
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = "ami-01d2cba66e4fe4e1e", instance_type = command_line_args.hopsfs_client_ags_it, security_group_id = security_groups_ids)
+        # HopsFS NameNodes.
+        create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = "ami-0cc88cd1a5dfaef18", instance_type = command_line_args.hopsfs_namenode_ags_it, security_group_id = security_groups_ids)
+        
+        logger.info("Created the EC2 launch templates.")
+    else:
+        logger.info("Skipping the creation of the EC2 launch templates.")
     
+    if not command_line_args.skip_autoscaling_groups:
+        logger.info("Creating the EC2 auto-scaling groups now.")
+        
+        # λFS clients.
+        create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
+        # HopsFS clients.
+        create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "hopsfs_clients")
+        # HopsFS NameNodes.
+        create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "hopsfs_namenodes")
+        
+        logger.info("Created the EC2 auto-scaling groups.")
+    else:
+        logger.info("Skipping the creation of the EC2 auto-scaling groups.") 
+
 def register_openwhisk_namenodes():
     """
     Create and register serverless NameNode functions with the EKS OpenWhisk cluster. 
@@ -604,6 +652,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create MySQL NDB Cluster.")
     parser.add_argument("--skip-eks", dest = "skip_eks", action = "store_true", help = "Do not create AWS EKS Cluster. If you skip the creation of the AWS EKS cluster, you should pass the name of the existing AWS EKS cluster via the '--eks-cluster-name' command-line argument.")
     parser.add_argument("--skip-vpc", dest = "skip_vpc_creation", action = 'store_true', help = "If passed, then skip the VPC creation step. Note that skipping this step may require additional configuration. See the comments in the provided `wukong_setup_config.yaml` for further information.")
+    parser.add_argument("--skip-eks-iam-role-creation", dest = "skip_iam_role_creation", action = 'store_true', help = "If passed, then skip the creation of the IAM role required by the AWS EKS cluster. You must pass the name of the IAM role via the '--eks-iam-role' argument if the role is not created with this script.")    
+    parser.add_argument("--skip-auto-scaling-groups", dest = "skip_autoscaling_groups", action = "store_true", help = "If passed, then do not create the EC2 auto-scaling groups (for ).")
+    parser.add_argument("--skip-launch-templates-groups", dest = "skip_launch_templates", action = "store_true", help = "If passed, then do not create the EC2 launch templates (for ).")
     
     # Config.
     parser.add_argument("--no-color", dest = "no_color", action = 'store_true', help = "If passed, then no color will be used when printing messages to the terminal.")    
@@ -625,7 +676,6 @@ def get_args() -> argparse.Namespace:
     
     # EKS.
     parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
-    parser.add_argument("--skip-eks-iam-role-creation", dest = "skip_iam_role_creation", action = 'store_true', help = "If passed, then skip the creation of the IAM role required by the AWS EKS cluster. You must pass the name of the IAM role via the '--eks-iam-role' argument if the role is not created with this script.")
     parser.add_argument("--eks-iam-role-name", dest = "eks_iam_role_name", type = str, default = "lambda-fs-eks-cluster-role", help = "The name to either use when creating the new IAM role for the AWS EKS cluster, or this is the name of an existing role to use for the cluster (when you also pass the '--skip-eks-iam-role-creation' argument).")
     return parser.parse_args()
 
@@ -890,29 +940,15 @@ def main():
         create_eks_iam_role = not skip_iam_role_creation,
         eks_iam_role_name = eks_iam_role_name,
     )
-
-    resp = ec2_client.describe_security_groups(
-        Filters = [{
-            'Name': 'vpc-id',
-            'Values': [vpc_id]   
-        }]
+    
+    logger.info("Creating EC2 launch templates and instance groups now.")
+    
+    create_launch_templates_and_instance_groups(
+        ec2_client = ec2_client,
+        autoscaling_client = autoscaling_client,
+        vpc_id = vpc_id,
+        command_line_args = command_line_args,
     )
-    security_groups_ids = []
-    for security_group in resp['SecurityGroups']:
-        security_group_id = security_group['GroupId']
-        security_groups_ids.append(security_group_id)
-
-    # λFS clients.
-    create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = "ami-027b04d5fece878a8", instance_type = command_line_args.lfs_client_ags_it, security_group_id = security_groups_ids)
-    create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
-    
-    # HopsFS clients.
-    create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = "ami-01d2cba66e4fe4e1e", instance_type = command_line_args.hopsfs_client_ags_it, security_group_id = security_groups_ids)
-    create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
-    
-    # HopsFS NameNodes.
-    create_launch_template(ec2_client = ec2_client, vpc_id = vpc_id, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = "ami-0cc88cd1a5dfaef18", instance_type = command_line_args.hopsfs_namenode_ags_it, security_group_id = security_groups_ids)
-    create_ec2_auto_scaling_group(autoscaling_client = autoscaling_client, launch_template_name = "lambda_fs_clients")
 
 if __name__ == "__main__":
     main()

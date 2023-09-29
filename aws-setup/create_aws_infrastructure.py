@@ -32,7 +32,7 @@ LAMBDA_FS_CLIENT_AMI = "ami-027b04d5fece878a8"
 LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
 
 # TODO:
-# - Create L-FS infrastrucutre.
+# - Create λFS infrastrucutre.
 #   - Client VM (or will this script be executed from that VM).
 #   X - Client auto-scaling group.
 #   - ZooKeeper nodes. 
@@ -371,7 +371,7 @@ def create_lambda_fs_client_vm(
     ec2_resource = None,
     instance_type:str = None,
     ssh_keypair_name:str = None,
-):
+)->bool:
     """
     Create the λFS client VM. Once created, this script should be executed from the λFS client VM to create the remaining AWS infrastructure.
     """
@@ -382,6 +382,8 @@ def create_lambda_fs_client_vm(
     if ssh_keypair_name is None:
         log_error("SSH keypair name cannot be null when creating the λFS client VM.")
         exit(1)
+    
+    return False 
 
 def create_ndb(
     ec2_resource = None,
@@ -511,6 +513,57 @@ def create_ndb(
         "manager-node-id": ndb_manager_instance[0].id,
         "data-node-ids": datanodes
     }
+
+def create_lambda_fs_zookeeper_vms(
+    ec2_resource = None,
+    ssh_keypair_name:str = None,
+    num_vms:int = 3,
+    subnet_id:str = None,
+    instance_type:str = "r5.4xlarge",
+    security_group_ids = [],
+):
+    """
+    Create the λFS ZooKeeper nodes.
+    
+    Return a list of str of the IDs of the newly-created λFS ZooKeeper nodes.
+    """
+    if ec2_resource is None:
+        log_error("EC2 resource cannot be null when creating the λFS ZooKeeper nodes.")
+        exit(1)
+    
+    if ssh_keypair_name is None:
+        log_error("SSH keypair name cannot be null when creating the λFS ZooKeeper nodes.")
+        exit(1)
+        
+    
+    logger.info("Creating %d λFS ZooKeeper node(s) of type %s." % (num_vms, instance_type))
+    
+    zookeeper_node_ids = []
+    for i in range(0, num_vms):
+        instance_name = "lambdafs-zookeeper-%d" % i
+        zoo_keeper_node = ec2_resource.create_instances(
+            MinCount = 1,
+            MaxCount = 1,
+            ImageId = LAMBDA_FS_ZOOKEEPER_AMI,
+            InstanceType = instance_type,
+            KeyName = ssh_keypair_name,
+            NetworkInterfaces = [{
+                "AssociatePublicIpAddress": True,
+                "DeviceIndex": 0,
+                "SubnetId": subnet_id,
+                    "Groups": security_group_ids
+            }],
+            TagSpecifications=[{
+                'ResourceType': 'instance',
+                'Tags': [{
+                        'Key': 'Name',
+                        'Value': instance_name
+                }]
+            }]  
+        )
+        zookeeper_node_ids.append(zoo_keeper_node[0].id)
+    
+    return zookeeper_node_ids
 
 def create_eks_iam_role(iam, iam_role_name:str = "lambda-fs-eks-cluster-role") -> str:
     """
@@ -818,7 +871,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--create-lfs-client-vm", dest = "create_lambda_fs_client_vm", action = "store_true", help = "If passed, then ONLY create the Client VM for λFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
     parser.add_argument("--skip-hopsfs-infrastrucutre", dest = "skip_hopsfs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to Vanilla HopsFS.")
     parser.add_argument("--skip-lambda-fs-infrastrucutre", dest = "skip_lambda_fs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to λFS.")
-    parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create MySQL NDB Cluster.")
+    parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create the MySQL NDB Cluster.")
+    parser.add_argument("--skip-zookeeper", dest = "skip_zookeeper", action = "store_true", help = "Do not create the λFS ZooKeeper nodes.")
     parser.add_argument("--skip-eks", dest = "skip_eks", action = "store_true", help = "Do not create AWS EKS Cluster. If you skip the creation of the AWS EKS cluster, you should pass the name of the existing AWS EKS cluster via the '--eks-cluster-name' command-line argument.")
     parser.add_argument("--skip-vpc", dest = "skip_vpc_creation", action = 'store_true', help = "If passed, then skip the VPC creation step. Note that skipping this step may require additional configuration. See the comments in the provided `wukong_setup_config.yaml` for further information.")
     parser.add_argument("--skip-eks-iam-role-creation", dest = "skip_iam_role_creation", action = 'store_true', help = "If passed, then skip the creation of the IAM role required by the AWS EKS cluster. You must pass the name of the IAM role via the '--eks-iam-role' argument if the role is not created with this script.")    
@@ -849,6 +903,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--lambdafs-zk-instance-type", dest = "lambdafs_zk_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the LambdaFS ZooKeeper node(s) instance type.")
     parser.add_argument("--lambdafs-client-vm-instance-type", dest = "lfs_client_vm_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the 'primary' λFS client VM, which also doubles as the experiment driver. Default: \"r5.4xlarge\"")
     parser.add_argument("--hopsfs-client-vm-instance-type", dest = "hopsfs_client_vm_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the 'primary' HopsFS client VM, which also doubles as the experiment driver. Default: \"r5.4xlarge\"")
+    parser.add_argument("--num-lambdafs-zookeeper-vms", dest = "num_lambda_fs_zk_vms", default = 3, type = int, help = "The number of λFS ZooKeeper VMs to create. Default: 3")
     
     # EKS.
     parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
@@ -895,6 +950,7 @@ def main():
             
             ssh_keypair_name = arguments.get("ssh_keypair_name", None)
             num_ndb_datanodes = arguments.get("num_ndb_datanodes", 4)
+            num_lambda_fs_zk_vms = arguments.get("num_lambda_fs_zk_vms", 3)
             
             lfs_client_ags_it = arguments.get("lfs_client_autoscaling_group_instance_type", "r5.4xlarge")
             hopsfs_client_ags_it = arguments.get("hopsfs_client_autoscaling_group_instance_type", "r5.4xlarge")
@@ -911,6 +967,7 @@ def main():
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
             skip_eks = arguments.get("skip_eks", False)
             skip_ndb = arguments.get("skip_ndb", False)
+            skip_zookeeper = arguments.get("skip_zookeeper", False)
             skip_launch_templates = arguments.get("skip_launch_templates", False)
             skip_autoscaling_groups = arguments.get("skip_autoscaling_groups", False)
     else:
@@ -926,6 +983,7 @@ def main():
         eks_iam_role_name = command_line_args.eks_iam_role_name
         ssh_keypair_name = command_line_args.ssh_keypair_name
         num_ndb_datanodes = command_line_args.num_ndb_datanodes
+        num_lambda_fs_zk_vms = command_line_args.num_lambda_fs_zk_vms
         ndb_manager_instance_type = command_line_args.ndb_manager_instance_type
         ndb_datanode_instance_type = command_line_args.ndb_datanode_instance_type
         lambdafs_zk_instance_type = command_line_args.lambdafs_zk_instance_type
@@ -940,6 +998,7 @@ def main():
         do_create_lambda_fs_client_vm = command_line_args.create_lambda_fs_client_vm
         skip_launch_templates = command_line_args.skip_launch_templates
         skip_autoscaling_groups = command_line_args.skip_autoscaling_groups
+        skip_zookeeper = command_line_args.skip_zookeeper
     
     if user_public_ip == "DEFAULT_VALUE":
         log_warning("Attempting to resolve your IP address automatically...")
@@ -1267,7 +1326,8 @@ def main():
     
     logger.info("Creating MySQL NDB Cluster now.")
     if not skip_ndb:
-        create_ndb(
+        logger.info("Creating the MySQL NDB cluster nodes now.")
+        ndb_resp = create_ndb(
             ec2_resource = ec2_resource, 
             ssh_keypair_name = ssh_keypair_name, 
             num_datanodes = num_ndb_datanodes, 
@@ -1275,6 +1335,20 @@ def main():
             subnet_id = public_subnet_ids[0],
             ndb_manager_instance_type = ndb_manager_instance_type,
             ndb_datanode_instance_type = ndb_datanode_instance_type)
+        
+        log_success("Created NDB Manager Node: %s" % ndb_resp["manager-node-id"])
+        log_success("Created %d NDB Data Node(s): %s" % (len(ndb_resp["data-node-ids"]), str(ndb_resp["data-node-ids"])))
+    
+    if not skip_zookeeper:
+        logger.info("Creating the λFS ZooKeeper nodes now.")
+        zk_result = create_lambda_fs_zookeeper_vms(
+            ec2_resource = ec2_resource, 
+            ssh_keypair_name = ssh_keypair_name, 
+            num_vms = num_lambda_fs_zk_vms, 
+            security_group_ids = security_group_ids,
+            subnet_id = public_subnet_ids[0],
+            instance_type = lambdafs_zk_instance_type)
+        log_success("Created %d ZooKeeper node(s): %s" % (len(zk_result), str(zk_result)))
     
     if do_create_lambda_fs_client_vm:
         logger.info("Creating λFS client virtual machine.")
@@ -1286,9 +1360,6 @@ def main():
         else:
             log_success("Successfully created λFS client virtual machine.")
             logger.info("This script will now terminate. Thank you.")
-            
-        return 
-
 
 if __name__ == "__main__":
     main()

@@ -10,6 +10,7 @@ eks_iam_role_name: "lambda-fs-eks-cluster-role"
 
 ssh_keypair_name: <FILL THIS IN>
 num_ndb_datanodes: 4
+num_lambda_fs_zk_vms: 3
 
 lfs_client_autoscaling_group_instance_type: "r5.4xlarge"
 hopsfs_client_autoscaling_group_instance_type: "r5.4xlarge"
@@ -26,5 +27,6 @@ skip_iam_role_creation: False
 skip_vpc_creation: False
 skip_eks: False
 skip_ndb: False
+skip_zookeeper: False
 skip_launch_templates: False
 skip_autoscaling_groups: False

@@ -9,6 +9,7 @@ eks_cluster_name : "lambda-fs-eks-cluster"
 eks_iam_role_name: "lambda-fs-eks-cluster-role"
 
 ssh_keypair_name: <FILL THIS IN>
+ssh_key_path: <FILL THIS IN>
 num_ndb_datanodes: 4
 num_lambda_fs_zk_vms: 3
 

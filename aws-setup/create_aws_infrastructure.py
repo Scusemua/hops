@@ -4,6 +4,7 @@ import botocore
 import json
 import logging 
 import os 
+import paramiko 
 import requests 
 import socket 
 import time 
@@ -13,6 +14,8 @@ import yaml
 from time import sleep
 from tqdm import tqdm
 from requests import get
+from paramiko.client import SSHClient, AutoAddPolicy
+from paramiko.rsakey import RSAKey
 
 os.system("color")
 
@@ -37,6 +40,7 @@ LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
 #   X - Client auto-scaling group.
 #   X - ZooKeeper nodes. 
 #   - Update configuration of ZooKeeper nodes via SSH.
+#   - Execute scripts to populate ZooKeeper.
 # X - Create HopsFS infrastrucutre.
 #   X - Client VM.
 #   X - Client auto-scaling group.
@@ -46,14 +50,17 @@ LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
 #   X - EKS cluster.
 #   X - NDB cluster.
 #   - Update configuration of NDB via SSH.
+#   - Execute scripts to populate initial tables in NDB.
 #   - Deploy OpenWhisk.
 #
-# - Make it so you can use YAML instead to pass everything in. 
+# X - Make it so you can use YAML instead to pass everything in. 
+# - Add documentation to sample config.
 #
 # - Script to delete everything. 
-    # - Delete NAT gateway.
-    # - Delete routes from route tables.
-    # - Delete internet gateway.
+#   - Need to persist IDs and stuff to a file so we can retrieve them after the script runs, perhaps.
+#   - Delete NAT gateway.
+#   - Delete routes from route tables.
+#   - Delete internet gateway.
 
 # Set up logging.
 logger = logging.getLogger(__name__)
@@ -932,6 +939,65 @@ def validate_keypair_exists(ssh_keypair_name = None, ec2_client = None)->bool:
     
     return False 
 
+def update_zookeeper_config(
+    ec2_client = None,
+    instance_ids:list = [],
+    ssh_key_path:str = None,
+):
+    """
+    Update the configuration information on the ZooKeeper VMs.
+    """
+    
+    config = """ \
+    tickTime=1000
+    dataDir=/data/zookeeper
+    dataLogDir=/disk2/zookeeper/logs
+    clientPort=2181
+    initLimi =5
+    syncLimit=2
+    admin.serverPort=8081
+    autopurge.snapRetainCount=3
+    autopurge.purgeInterval=24
+    """
+
+    ssh_key_path = "C:/Users/benrc/.ssh/bcarver.pem"
+
+    resp = ec2_client.describe_instances(InstanceIds = instance_ids)
+    instance_private_dns_names = []
+    instance_public_ips = []
+    for i,reservation in enumerate(resp['Reservations']):
+        private_dns_name = reservation['Instances'][0]['PrivateDnsName']
+        public_ip = reservation['Instances'][0]['PublicIpAddress']
+        logger.info("Private DNS name of ZooKeeper VM #%d: %s" % (i, private_dns_name))
+        logger.info("Public IP address of ZooKeeper VM #%d: %s" % (i, public_ip))
+        instance_private_dns_names.append(private_dns_name)
+        instance_public_ips.append(public_ip)
+
+    instance_private_dns_names = ["ip-10-0-22-153.ec2.internal", "ip-10-0-26-98.ec2.internal", "ip-10-0-18-74.ec2.internal"]
+    for i,private_dns_name in enumerate(instance_private_dns_names):
+        config = config + ("server.%d=%s:2888:3888" % (i, private_dns_name)) + "\n"
+
+    logger.info("Configuration file:\n%s" % str(config))
+
+    key = RSAKey(filename = ssh_key_path)
+
+    for i,ip in enumerate(instance_public_ips):
+        ssh_client = SSHClient()
+        ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+        logger.info("Connecting to ZooKeeper VM at %s" % ip)
+        ssh_client.connect(hostname = ip, port = 22, username = "ubuntu", pkey = key)
+        logger.info("Connected!")
+        
+        sftp_client = ssh_client.open_sftp()
+        file = sftp_client.open("/home/ubuntu/zk/conf/zoo.cfg", mode = "w")
+        
+        file.write(config)
+        file.close()
+        
+        ssh_client.exec_command("echo %d > /data/zookeeper/myid" % i)
+        
+        ssh_client.close()
+
 def get_args() -> argparse.Namespace:
     """
     Parse the commandline arguments.
@@ -957,6 +1023,9 @@ def get_args() -> argparse.Namespace:
     # Config.
     parser.add_argument("--no-color", dest = "no_color", action = 'store_true', help = "If passed, then no color will be used when printing messages to the terminal.")    
     
+    parser.add_argument("--ssh-keypair-name", dest = "ssh_keypair_name", type = str, default = None, help = "The name of the SSH keypair registered with AWS. This MUST be specified when creating any EC2 VMs, as we must pass the name of the keypair to the EC2 API so that you will have SSH access to the virtual machines. There is no default value.")
+    parser.add_argument("--ssh-key-path", dest = "ssh_key_path", type = str, default = None, help = "Path to the SSH key.")
+    
     # General AWS-related configuration.
     parser.add_argument("-p", "--aws-profile", dest = 'aws_profile', default = None, type = str, help = "The AWS credentials profile to use when creating the resources. If nothing is specified, then this script will ultimately use the default AWS credentials profile.")
     parser.add_argument("--aws-region", dest = "aws_region", type = str, default = "us-east-1", help = "The AWS region in which the AWS resources should be created/provisioned. Default: \"us-east-2\"")
@@ -971,7 +1040,6 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("-lfs-c-ags-it", "--lfs-client-auto-scaling-group-instance-type", dest = "lfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the λFS client auto-scaling group. Default: \"r5.4xlarge\"")
     parser.add_argument("-hfs-c-ags-it","--hopsfs-client-auto-scaling-group-instance-type", dest = "hopsfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS client auto-scaling group. Default: \"r5.4xlarge\"")
     parser.add_argument("-hfs-nn-ags-it","--hopsfs-namenode-auto-scaling-group-instance-type", dest = "hopsfs_namenode_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS NameNode auto-scaling group. Default: \"r5.4xlarge\"")
-    parser.add_argument("--ssh-keypair-name", dest = "ssh_keypair_name", type = str, default = None, help = "The name of the SSH keypair registered with AWS. This MUST be specified when creating any EC2 VMs, as we must pass the name of the keypair to the EC2 API so that you will have SSH access to the virtual machines. There is no default value.")
     parser.add_argument("--num-ndb-datanodes", dest = "num_ndb_datanodes", type = int, default = 4, help = "The number of MySQL NDB Data Nodes to create. Default: 4")
     parser.add_argument("--ndb-manager-node-instance-type", dest = "ndb_manager_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the MySQL NDB Manager Node. Default: \"r5.4xlarge\"")
     parser.add_argument("--ndb-data-node-instance-type", dest = "ndb_datanode_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the MySQL NDB Data Node(s). Default: \"r5.4xlarge\"")
@@ -995,8 +1063,6 @@ def main():
     log_warning("AWS will begin charging you for these resources as soon as they are created.")
     print()
     print()
-    
-    # time.sleep(0.125)
     
     using_yaml = False 
     
@@ -1024,6 +1090,7 @@ def main():
             eks_iam_role_name = arguments.get("eks_iam_role_name", "lambda-fs-eks-cluster-role")
             
             ssh_keypair_name = arguments.get("ssh_keypair_name", None)
+            ssh_key_path = arguments.get("ssh_key_path", None)
             num_ndb_datanodes = arguments.get("num_ndb_datanodes", 4)
             num_lambda_fs_zk_vms = arguments.get("num_lambda_fs_zk_vms", 3)
             
@@ -1046,6 +1113,14 @@ def main():
             skip_zookeeper = arguments.get("skip_zookeeper", False)
             skip_launch_templates = arguments.get("skip_launch_templates", False)
             skip_autoscaling_groups = arguments.get("skip_autoscaling_groups", False)
+            
+            if ssh_key_path is None and (not skip_ndb or not skip_zookeeper or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
+                log_error("The SSH key path cannot be None.")
+                exit(1)
+                
+            if ssh_keypair_name is None and (not skip_ndb or not skip_zookeeper or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
+                log_error("The SSH keypair name cannot be None.")
+                exit(1)
     else:
         NO_COLOR = command_line_args.no_color
         aws_profile_name = command_line_args.aws_profile
@@ -1076,6 +1151,7 @@ def main():
         skip_launch_templates = command_line_args.skip_launch_templates
         skip_autoscaling_groups = command_line_args.skip_autoscaling_groups
         skip_zookeeper = command_line_args.skip_zookeeper
+        ssh_key_path = command_line_args.ssh_key_path
     
     if user_public_ip == "DEFAULT_VALUE":
         log_warning("Attempting to resolve your IP address automatically...")
@@ -1083,7 +1159,6 @@ def main():
             user_public_ip = get('https://api.ipify.org', timeout = 5).content.decode('utf8')
             log_success("Successfully resolved your IP address.")
             print()
-            # time.sleep(0.125)
         except (requests.exceptions.ReadTimeout, urllib3.exceptions.ReadTimeoutError):
             log_error("Could not connect to api.ipify.org to resolve your IP address. Please pass your IP address to this script directly to continue.")
             exit(1)
@@ -1102,7 +1177,6 @@ def main():
     else:
         logger.info("Selected AWS profile: \"%s\"" % aws_profile_name)
 
-    # time.sleep(0.25)
     
     print()
     print()
@@ -1418,14 +1492,20 @@ def main():
     
     if not skip_zookeeper:
         logger.info("Creating the λFS ZooKeeper nodes now.")
-        zk_result = create_lambda_fs_zookeeper_vms(
+        zk_node_IDs = create_lambda_fs_zookeeper_vms(
             ec2_resource = ec2_resource, 
             ssh_keypair_name = ssh_keypair_name, 
             num_vms = num_lambda_fs_zk_vms, 
             security_group_ids = security_group_ids,
             subnet_id = public_subnet_ids[0],
             instance_type = lambdafs_zk_instance_type)
-        log_success("Created %d ZooKeeper node(s): %s" % (len(zk_result), str(zk_result)))
+        log_success("Created %d ZooKeeper node(s): %s" % (len(zk_node_IDs), str(zk_node_IDs)))
+        
+        logger.info("Sleeping for 30 seconds so that ZooKeeper VMs can start.")
+        for _ in tqdm(range(121)):
+            sleep(0.25)
+        
+        update_zookeeper_config(ec2_client = ec2_client, instance_ids = zk_node_IDs, ssh_key_path = ssh_key_path)        
     
     if do_create_lambda_fs_client_vm:
         logger.info("Creating λFS client virtual machine.")

@@ -11,11 +11,12 @@ import time
 import urllib3
 import yaml 
 
-from time import sleep
-from tqdm import tqdm
-from requests import get
+from datetime import datetime
 from paramiko.client import SSHClient, AutoAddPolicy
 from paramiko.rsakey import RSAKey
+from requests import get
+from time import sleep
+from tqdm import tqdm
 
 os.system("color")
 
@@ -34,12 +35,15 @@ HOPSFS_NAMENODE_AMI = "ami-0cc88cd1a5dfaef18"
 LAMBDA_FS_CLIENT_AMI = "ami-027b04d5fece878a8"
 LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
 
+# Starts ZooKeeper.
+START_ZK_COMMAND = "sudo /opt/zookeeper/bin/zkServer.sh start"
+
 # TODO:
 # X - Create λFS infrastrucutre.
 #   X - Client VM (or will this script be executed from that VM).
 #   X - Client auto-scaling group.
 #   X - ZooKeeper nodes. 
-#   - Update configuration of ZooKeeper nodes via SSH.
+#   X - Update configuration of ZooKeeper nodes via SSH.
 #   - Execute scripts to populate ZooKeeper.
 # X - Create HopsFS infrastrucutre.
 #   X - Client VM.
@@ -807,6 +811,8 @@ def create_ec2_auto_scaling_group(
 ):
     """
     Create an EC2 auto-scaling group.
+    
+    Returns a 2-tuple where the first element is the newly-created launch template's name and the second is the template's ID.
     """
     if autoscaling_client is None:
         log_error("Autoscaling client cannot be done when creating an auto-scaling group.")
@@ -827,6 +833,11 @@ def create_ec2_auto_scaling_group(
     )
     
     logger.info("Response from creating auto-scaling group \"%s\": %s" % (auto_scaling_group_name, str(response)))
+    
+    # asg_name = response
+    # asg_id = response
+    
+    # return asg_name, asg_id
 
 def create_launch_template(
     launch_template_name:str = "",
@@ -838,6 +849,8 @@ def create_launch_template(
 ):
     """
     Create an EC2 Launch Template for use with an EC2 Auto-Scaling Group. 
+    
+    Returns a 2-tuple where the first element is the newly-created launch template's name and the second is the template's ID.
     """
     if ec2_client is None:
         log_error("EC2 client cannot be null when creating a launch template.")
@@ -858,17 +871,22 @@ def create_launch_template(
     )
     
     logger.info("Response from creating launch template \"%s\": %s" % (launch_template_name, str(response)))
+    
+    template_name = response['LaunchTemplate']['LaunchTemplateName']
+    template_id = response['LaunchTemplate']['LaunchTemplateId']
+    
+    return template_name, template_id 
 
 def create_launch_templates_and_instance_groups(
     ec2_client = None,
     autoscaling_client = None,
-    vpc_id:str = None,
     lfs_client_ags_it:str = "r5.4xlarge",
     hopsfs_client_ags_it:str = "r5.4xlarge",
     hopsfs_namenode_ags_it:str = "r5.4xlarge",
     skip_launch_templates:bool = False,
     skip_autoscaling_groups:bool = False,
-    security_group_ids:list = []
+    security_group_ids:list = [],
+    data = {}
 ):
     """
     Create the launch templates and auto-scaling groups for λFS clients, HopsFS clients, and HopsFS NameNodes.
@@ -878,11 +896,22 @@ def create_launch_templates_and_instance_groups(
         logger.info("Creating the EC2 launch templates now.")
         
         # λFS clients.
-        create_launch_template(ec2_client = ec2_client, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = LAMBDA_FS_CLIENT_AMI, instance_type = lfs_client_ags_it, security_group_ids = security_group_ids)
+        name, id = create_launch_template(ec2_client = ec2_client, launch_template_name = "lambda_fs_clients", launch_template_description = "LambdaFS_Clients_Ver1", ami_id = LAMBDA_FS_CLIENT_AMI, instance_type = lfs_client_ags_it, security_group_ids = security_group_ids)
+        
+        data["lfs-client-launch-template-name"] = name
+        data["lfs-client-launch-template-id"] = id 
+        
         # HopsFS clients.
-        create_launch_template(ec2_client = ec2_client, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = HOPSFS_CLIENT_AMI, instance_type = hopsfs_client_ags_it, security_group_ids = security_group_ids)
+        name, id = create_launch_template(ec2_client = ec2_client, launch_template_name = "hopsfs_clients", launch_template_description = "HopsFS_Clients_Ver1", ami_id = HOPSFS_CLIENT_AMI, instance_type = hopsfs_client_ags_it, security_group_ids = security_group_ids)
+        
+        data["hospfs-client-launch-template-name"] = name
+        data["hospfs-client-launch-template-id"] = id 
+        
         # HopsFS NameNodes.
-        create_launch_template(ec2_client = ec2_client, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = HOPSFS_NAMENODE_AMI, instance_type = hopsfs_namenode_ags_it, security_group_ids = security_group_ids)
+        name, id = create_launch_template(ec2_client = ec2_client, launch_template_name = "hopsfs_namenodes", launch_template_description = "HopsFS_NameNodes_Ver1", ami_id = HOPSFS_NAMENODE_AMI, instance_type = hopsfs_namenode_ags_it, security_group_ids = security_group_ids)
+        
+        data["hopsfs-nn-launch-template-name"] = name
+        data["hopsfs-nn-launch-template-id"] = id 
         
         logger.info("Created the EC2 launch templates.")
     else:
@@ -946,6 +975,10 @@ def update_zookeeper_config(
 ):
     """
     Update the configuration information on the ZooKeeper VMs.
+    
+    Returns:
+    --------
+        list of str: The public IP addresses of the newly-created ZooKeeper nodes.
     """
     
     config = """ \
@@ -997,6 +1030,44 @@ def update_zookeeper_config(
         ssh_client.exec_command("echo %d > /data/zookeeper/myid" % i)
         
         ssh_client.close()
+    
+    return instance_public_ips
+
+def start_zookeeper_cluster(
+    ips = [],
+    ssh_key_path = None,
+):
+    """
+    Start the ZooKeeper cluster.
+    """
+    if ips is None or len(ips) is 0:
+        log_error("Received no ZooKeeper IP addresses. Cannot start the server.")
+        return 
+    
+    if ssh_key_path is None:
+        log_error("SSH key path cannot be None.")
+        exit(1)
+    
+    for ip in ips:
+        logger.info("Starting ZooKeeper node: %s" % ip)
+        
+def populate_zookeeper(
+    ips = [],
+    ssh_key_path = None,
+):
+    """
+    SFTP the script used to populate ZooKeeper with data to a ZooKeeper node and then execute it.
+    """
+    if ips is None or len(ips) is 0:
+        log_error("Received no ZooKeeper IP addresses. Cannot start the server.")
+        return 
+        
+    if ssh_key_path is None:
+        log_error("SSH key path cannot be None.")
+        exit(1)
+
+    target_server_ip = ips[0]
+    logger.info("Connecting to ZooKeeper server at %s to populate cluster." % target_server_ip)
 
 def get_args() -> argparse.Namespace:
     """
@@ -1048,6 +1119,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--hopsfs-client-vm-instance-type", dest = "hopsfs_client_vm_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the 'primary' HopsFS client VM, which also doubles as the experiment driver. Default: \"r5.4xlarge\"")
     parser.add_argument("--num-lambdafs-zookeeper-vms", dest = "num_lambda_fs_zk_vms", default = 3, type = int, help = "The number of λFS ZooKeeper VMs to create. Default: 3")
     
+    # parser.add_argument("-start-zk", "--start-zoo-keeper", dest = "start_zoo_keeper", action = "store_true", help = "If passed, also start associated ZooKeeper on the VMs. Note that, if you simply opt to create the ZooKeeper VMs, the VMs will start running. But ZooKeeper itself won't be started unless you pass this argument.")
+    # parser.add_argument("--start-ndb", dest = "start_ndb", action = "store_true", help = "If passed, also start NDB on the associated VMs. Note that, if you simply opt to create the NDB VMs, the VMs will start running. But NDB itself won't be started unless you pass this argument.")
+    
     # EKS.
     parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
     parser.add_argument("--eks-iam-role-name", dest = "eks_iam_role_name", type = str, default = "lambda-fs-eks-cluster-role", help = "The name to either use when creating the new IAM role for the AWS EKS cluster, or this is the name of an existing role to use for the cluster (when you also pass the '--skip-eks-iam-role-creation' argument).")
@@ -1065,6 +1139,9 @@ def main():
     print()
     
     using_yaml = False 
+    
+    # Keep track of instance IDs and whatnot so we can find them later.
+    data = dict() 
     
     if command_line_args.yaml is not None:
         using_yaml = True 
@@ -1114,6 +1191,9 @@ def main():
             skip_launch_templates = arguments.get("skip_launch_templates", False)
             skip_autoscaling_groups = arguments.get("skip_autoscaling_groups", False)
             
+            # start_zookeeper = arguments.get("start_zoo_keeper", False)
+            # start_ndb = arguments.get("start_ndb", False)
+            
             if ssh_key_path is None and (not skip_ndb or not skip_zookeeper or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
                 log_error("The SSH key path cannot be None.")
                 exit(1)
@@ -1152,6 +1232,8 @@ def main():
         skip_autoscaling_groups = command_line_args.skip_autoscaling_groups
         skip_zookeeper = command_line_args.skip_zookeeper
         ssh_key_path = command_line_args.ssh_key_path
+        # start_zookeeper = command_line_args.start_zookeeper
+        # start_ndb = command_line_args.start_ndb
     
     if user_public_ip == "DEFAULT_VALUE":
         log_warning("Attempting to resolve your IP address automatically...")
@@ -1190,43 +1272,6 @@ def main():
     else:
         for arg in vars(command_line_args):
             logger.info("{:50s}= \"{}\"".format(arg, str(getattr(command_line_args, arg))))
-            
-    # logger.info("Selected AWS region: \"%s\"" % aws_region)
-    # logger.info("Your IP address: \"%s\"" % user_public_ip)
-    # print()
-    # if not skip_vpc_creation:
-    #     logger.info("Create VPC: TRUE")
-    #     if len(vpc_name) == 0:
-    #         log_error("Invalid VPC name specified. VPC name must ")
-    #     logger.info("New VPC name: \"%s\"" % vpc_name)
-    #     logger.info("VPC IPv4 CIDR block: \"%s\"" % vpc_cidr_block)
-    # else:
-    #     logger.info("Create VPC: FALSE")
-    #     logger.info("Existing VPC name: \"%s\"" % vpc_name)
-    
-    # print()
-    # if not skip_eks:
-    #     logger.info("Create AWS EKS cluster: TRUE")
-    #     logger.info("New AWS EKS cluster name: \"%s\"" % eks_cluster_name)
-    # else:
-    #     logger.info("Create AWS EKS cluster: FALSE")
-    #     logger.info("Existing AWS EKS cluster name: \"%s\"" % eks_cluster_name)
-    
-    # print()
-    # if not skip_iam_role_creation:
-    #     logger.info("Create AWS EKS cluster IAM role: TRUE")
-    #     logger.info("New IAM role name: \"%s\"" % eks_iam_role_name)
-    # else:
-    #     logger.info("Create AWS EKS cluster IAM role: FALSE")
-    #     logger.info("Existing IAM role name: \"%s\"" % eks_iam_role_name)
-    
-    # print()
-    # logger.info("λFS client auto-scaling group instance type: %s", lfs_client_ags_it)
-    # logger.info("HopsFS client auto-scaling group instance type: %s", hopsfs_client_ags_it)
-    # logger.info("HopsFS NameNode auto-scaling group instance type: %s", hopsfs_namenode_ags_it)
-    
-    # print()
-    # logger.info("SSH Keypair Name: %s" % ssh_keypair_name)
     
     # Give the user a chance to verify that the information they specified is correct.
     while True:
@@ -1266,6 +1311,11 @@ def main():
         log_error("Please verify that the given keypair exists, is registered with AWS, and has no typos in its name.")
         exit(1)
 
+
+    data["aws_region"] = aws_region 
+    data["user_public_ip"] = user_public_ip
+    data["vpc_name"] = vpc_name 
+
     vpc_id:str = None 
     if not skip_vpc_creation:
         logger.info("Creating Virtual Private Cloud now.")
@@ -1278,6 +1328,9 @@ def main():
             ec2_client = ec2_client,
             ec2_resource = ec2_resource
         )
+        
+        data["security_group_name"] = security_group_name
+        data["vpc_id"] = vpc_id
     else:
         logger.info("Querying AWS for VPC ID of VPC \"%s\"" % vpc_name)
         resp = ec2_client.describe_vpcs(
@@ -1371,6 +1424,8 @@ def main():
                     continue 
         else:
             vpc_id = resp['Vpcs'][0]['VpcId']
+        
+        data["vpc_id"] = vpc_id
             
     log_success("Resolved VPC ID of VPC \"%s\" as %s" % (vpc_name, vpc_id))
         
@@ -1399,16 +1454,18 @@ def main():
         security_group_id = security_group['GroupId']
         security_group_ids.append(security_group_id)
     
+    data["security_group_ids"] = security_group_ids
+    
     create_launch_templates_and_instance_groups(
         ec2_client = ec2_client,
         autoscaling_client = autoscaling_client,
-        vpc_id = vpc_id,
         security_group_ids = security_group_ids,
         lfs_client_ags_it = lfs_client_ags_it,
         hopsfs_client_ags_it = hopsfs_client_ags_it,
         hopsfs_namenode_ags_it = hopsfs_namenode_ags_it,
         skip_launch_templates = skip_launch_templates,
         skip_autoscaling_groups = skip_autoscaling_groups,
+        data = data
     )
     
     # Get the subnet ID(s).
@@ -1475,6 +1532,10 @@ def main():
         log_error("Subnet IDs: %s" % str(subnet_ids))
         exit(1)
     
+    data['subnet_ids'] = subnet_ids
+    data['public_subnet_ids'] = public_subnet_ids
+    data['private_subnet_ids'] = private_subnet_ids
+    
     logger.info("Creating MySQL NDB Cluster now.")
     if not skip_ndb:
         logger.info("Creating the MySQL NDB cluster nodes now.")
@@ -1489,6 +1550,8 @@ def main():
         
         log_success("Created NDB Manager Node: %s" % ndb_resp["manager-node-id"])
         log_success("Created %d NDB Data Node(s): %s" % (len(ndb_resp["data-node-ids"]), str(ndb_resp["data-node-ids"])))
+        
+        data.update(ndb_resp)
     
     if not skip_zookeeper:
         logger.info("Creating the λFS ZooKeeper nodes now.")
@@ -1501,21 +1564,43 @@ def main():
             instance_type = lambdafs_zk_instance_type)
         log_success("Created %d ZooKeeper node(s): %s" % (len(zk_node_IDs), str(zk_node_IDs)))
         
+        data["zk_node_IDs"] = zk_node_IDs
+        
         logger.info("Sleeping for 30 seconds so that ZooKeeper VMs can start.")
         for _ in tqdm(range(121)):
             sleep(0.25)
         
-        update_zookeeper_config(ec2_client = ec2_client, instance_ids = zk_node_IDs, ssh_key_path = ssh_key_path)        
+        logger.info("Updating ZooKeeper configuration now.")
+        update_zookeeper_config(ec2_client = ec2_client, instance_ids = zk_node_IDs, ssh_key_path = ssh_key_path)
+        
+        logger.info("Starting ZooKeeper now.")
+        start_zookeeper_cluster(instance_ids = zk_node_IDs, ssh_key_path = ssh_key_path)
+        
+        logger.info("Populating ZooKeeper cluster now.")
+        populate_zookeeper()
     
     if do_create_lambda_fs_client_vm:
         logger.info("Creating λFS client virtual machine.")
         lambda_fs_primary_client_vm_id = create_lambda_fs_client_vm(ec2_resource = ec2_resource, ssh_keypair_name = ssh_keypair_name, instance_type = lfs_client_vm_instance_type, subnet_id = public_subnet_ids[0], security_group_ids = security_group_ids)
         log_success("Created λFS client virtual machine: %s" % lambda_fs_primary_client_vm_id)
         
+        data["lambda_fs_primary_client_vm_id"] = lambda_fs_primary_client_vm_id
+        
     if do_create_hops_fs_client_vm:
-        logger.info("Creating λFS client virtual machine.")
+        logger.info("Creating HopsFS client virtual machine.")
         hops_fs_primary_client_vm_id = create_hops_fs_client_vm(ec2_resource = ec2_resource, ssh_keypair_name = ssh_keypair_name, instance_type = hopsfs_client_vm_instance_type, subnet_id = public_subnet_ids[0], security_group_ids = security_group_ids)
-        log_success("Created λFS client virtual machine: %s" % hops_fs_primary_client_vm_id)
+        log_success("Created HopsFS client virtual machine: %s" % hops_fs_primary_client_vm_id)
+        
+        data["hops_fs_primary_client_vm_id"] = hops_fs_primary_client_vm_id
+    
+    current_datetime = str(datetime.now())
+    current_datetime = current_datetime.replace(":", "_")
+    
+    with open("./infrastructure_ids_%s_compat.json" % current_datetime, "w") as f:
+        json.dump(data, f)
+
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
 if __name__ == "__main__":
     main()

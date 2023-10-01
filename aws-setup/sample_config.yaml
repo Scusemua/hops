@@ -25,6 +25,9 @@ hopsfs_client_vm_instance_type: "r5.4xlarge"
 create_lambda_fs_client_vm: True
 create_hops_fs_client_vm: True
 
+# in megabytes. used 12000 in evaluation.
+zookeeper_jvm_heap_size: 4000
+
 skip_iam_role_creation: False
 skip_vpc_creation: False
 skip_eks: False

@@ -1185,7 +1185,7 @@ def get_args() -> argparse.Namespace:
     # # EKS.
     # parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
     # parser.add_argument("--eks-iam-role-name", dest = "eks_iam_role_name", type = str, default = "lambda-fs-eks-cluster-role", help = "The name to either use when creating the new IAM role for the AWS EKS cluster, or this is the name of an existing role to use for the cluster (when you also pass the '--skip-eks-iam-role-creation' argument).")
-    # return parser.parse_args()
+    return parser.parse_args()
 
 def main():
     global NO_COLOR

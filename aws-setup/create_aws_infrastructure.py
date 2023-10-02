@@ -1223,7 +1223,7 @@ def create_ndb_config(
         local_ndb_my_cnf.write("# Options for NDB Cluster processes:\n")
         local_ndb_my_cnf.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_ip)
     
-    sftp.put("./temporary/my.cnf", "etc/my.cnf")
+    sftp.put("./temporary/my.cnf", "/etc/my.cnf")
     ssh_client.close()
     
     # TODO: The /etc/my.cnf configuration file for the data nodes.
@@ -1721,6 +1721,8 @@ def main():
     
     ndb_mgm_public_ip = None
     data_node_public_ips = None 
+    datanode_ids = None
+    ndb_manager_node_id = None
     if do_create_ndb_cluster:
         logger.info("Creating the MySQL NDB cluster nodes now.")
         ndb_resp = create_ndb_cluster(
@@ -1740,8 +1742,18 @@ def main():
         
         ndb_mgm_public_ip = ndb_resp["manager-node-public-ip"]
         data_node_public_ips = ndb_resp["data-node-public-ips"]
+        datanode_ids = ndb_resp["data-node-ids"]
+        ndb_manager_node_id = ndb_resp["manager-node-id"]
         
-        create_ndb_config(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory, data_node_public_ips = data_node_public_ips)
+        try:
+            create_ndb_config(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory, data_node_public_ips = data_node_public_ips)
+        except Exception as ex:
+            log_error("Exception encountered while creating NDB configuration files.")
+            log_error(repr(ex))
+            log_error("Terminating NDB manager node.")
+            ec2_client.terminate_instances(InstanceIds = [ndb_manager_node_id])
+            log_error("Terminating the %d NDB data node(s)." % len(datanode_ids))
+            ec2_client.terminate_instances(InstanceIds = datanode_ids)
     
     if do_start_ndb_cluster:
         if ndb_mgm_public_ip == None:
@@ -1752,6 +1764,7 @@ def main():
             
             logger.debug("Retrieving NDB manager node's IP from the `infrastructure_json` data.")
             ndb_mgm_public_ip = infrastructure_json.get("manager-node-public-ip", None)
+            ndb_manager_node_id = infrastructure_json.get("manager-node-id", None)
         
         if data_node_public_ips == None:
             if "data-node-public-ips" not in infrastructure_json:
@@ -1761,6 +1774,7 @@ def main():
             
             logger.debug("Retrieving NDB data nodes' IP from the `infrastructure_json` data.")
             data_node_public_ips = infrastructure_json.get("data-node-public-ips", None)
+            datanode_ids = infrastructure_json.get("data-node-ids", None)
         
         logger.info("Starting the MySQL NDB cluster now.")
         start_ndb_cluster(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, data_node_ips = data_node_public_ips)

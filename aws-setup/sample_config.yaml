@@ -41,6 +41,13 @@ start_zookeeper_cluster: True
 # Populate the ZooKeeper cluster with the data required by Lambda-FS.
 populate_zookeeper_cluster: True 
 
+# You only need to specify this argument if you've already setup the ZooKeeper cluster and just want to (e.g.,) start the cluster on the already-running VMs.
+# See the comment above the `start_zookeeper_cluster` property for more details.
+# zk_node_public_IPs:
+# - <IP1>
+# - <IP2>
+# - <IP3>
+
 # in megabytes. used 12000 in evaluation.
 zookeeper_jvm_heap_size: 4000
 

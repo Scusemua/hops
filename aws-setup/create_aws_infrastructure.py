@@ -38,34 +38,6 @@ LAMBDA_FS_ZOOKEEPER_AMI = "ami-0dbd3f0e8300ba676"
 # Starts ZooKeeper.
 START_ZK_COMMAND = "sudo /opt/zookeeper/bin/zkServer.sh start"
 
-# TODO:
-# X - Create λFS infrastrucutre.
-#   X - Client VM (or will this script be executed from that VM).
-#   X - Client auto-scaling group.
-#   X - ZooKeeper nodes. 
-#   X - Update configuration of ZooKeeper nodes via SSH.
-#   - Execute scripts to populate ZooKeeper.
-# X - Create HopsFS infrastrucutre.
-#   X - Client VM.
-#   X - Client auto-scaling group.
-#   X - NameNode auto-scaling group.
-# - Create shared infrastrucutre.
-#   X - Create VPC.
-#   X - EKS cluster.
-#   X - NDB cluster.
-#   - Update configuration of NDB via SSH.
-#   - Execute scripts to populate initial tables in NDB.
-#   - Deploy OpenWhisk.
-#
-# X - Make it so you can use YAML instead to pass everything in. 
-# - Add documentation to sample config.
-#
-# - Script to delete everything. 
-#   - Need to persist IDs and stuff to a file so we can retrieve them after the script runs, perhaps.
-#   - Delete NAT gateway.
-#   - Delete routes from route tables.
-#   - Delete internet gateway.
-
 # Set up logging.
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -1015,7 +987,7 @@ tickTime=1000
 dataDir=/data/zookeeper
 dataLogDir=/disk2/zookeeper/logs
 clientPort=2181
-initLimi =5
+initLimit=5
 syncLimit=2
 admin.serverPort=8081
 autopurge.snapRetainCount=3
@@ -1025,18 +997,18 @@ autopurge.purgeInterval=24
     ssh_key_path = "C:/Users/benrc/.ssh/bcarver.pem"
 
     resp = ec2_client.describe_instances(InstanceIds = instance_ids)
-    instance_private_dns_names = []
+    instance_private_ips = []
     instance_public_ips = []
     for i,reservation in enumerate(resp['Reservations']):
-        private_dns_name = reservation['Instances'][0]['PrivateDnsName']
+        private_ip_addr = reservation['Instances'][0]['PrivateIpAddress']
         public_ip = reservation['Instances'][0]['PublicIpAddress']
-        logger.info("Private DNS name of ZooKeeper VM #%d: %s" % (i, private_dns_name))
+        logger.info("Private DNS name of ZooKeeper VM #%d: %s" % (i, private_ip_addr))
         logger.info("Public IP address of ZooKeeper VM #%d: %s" % (i, public_ip))
-        instance_private_dns_names.append(private_dns_name)
+        instance_private_ips.append(private_ip_addr)
         instance_public_ips.append(public_ip)
 
-    for i,private_dns_name in enumerate(instance_private_dns_names):
-        config = config + ("server.%d=%s:2888:3888" % (i, private_dns_name)) + "\n"
+    for i,private_ip_addr in enumerate(instance_private_ips):
+        config = config + ("server.%d=%s:2888:3888" % (i, private_ip_addr)) + "\n"
 
     logger.info("Configuration file:\n%s" % str(config))
 
@@ -1047,10 +1019,10 @@ autopurge.purgeInterval=24
         ssh_client.set_missing_host_key_policy(AutoAddPolicy)
         logger.info("Connecting to ZooKeeper VM #%d at %s" % (i, ip))
         ssh_client.connect(hostname = ip, port = 22, username = "ubuntu", pkey = key)
-        logger.info("Connected!")
+        logger.info("Connected! SFTP-ing configuration now.")
         
         sftp_client = ssh_client.open_sftp()
-        file = sftp_client.open("/home/ubuntu/zk/conf/zoo.cfg", mode = "w")
+        file = sftp_client.open("/opt/zookeeper/conf/zoo.cfg", mode = "w")
         
         file.write(config)
         file.close()
@@ -1058,6 +1030,7 @@ autopurge.purgeInterval=24
         zk_env_file = sftp_client.open("/opt/zookeeper/conf/zookeeper-env.sh", mode = "w")
         zk_env_file.write("ZK_SERVER_HEAP=\"%d\"\n" % zookeeper_jvm_heap_size)
         zk_env_file.write("JVMFLAGS=\"-Xms%dm\"\n" % zookeeper_jvm_heap_size)
+        zk_env_file.write("ZK_CLIENT_HEAP=\"%d\"\n" % zookeeper_jvm_heap_size)
         zk_env_file.close()
         
         ssh_client.exec_command("echo %d > /data/zookeeper/myid" % i)
@@ -1065,7 +1038,7 @@ autopurge.purgeInterval=24
         ssh_client.close()
     
     data["zk_node_public_IPs"] = instance_public_ips
-    data["zk_node_private_dns_names"] = instance_private_dns_names
+    data["zk_node_private_ip_addrs"] = instance_private_ips
     
     return instance_public_ips
 
@@ -1125,12 +1098,16 @@ def populate_zookeeper(
     ssh_client.set_missing_host_key_policy(AutoAddPolicy)
     logger.info("Connecting to ZooKeeper VM at %s" % target_server_ip)
     ssh_client.connect(hostname = target_server_ip, port = 22, username = "ubuntu", pkey = key)
-    logger.info("Connected!")
+    logger.info("Connected! Populating ZK now.")
     
     sftp = ssh_client.open_sftp()
     sftp.put("./populate_zk_script", "/home/ubuntu/populate_zk_script")
     
-    ssh_client.exec_command("sudo /opt/zookeeper/bin/zkCli.sh < /home/ubuntu/populate_zk_script")
+    _, stdout, stderr = ssh_client.exec_command("sudo /opt/zookeeper/bin/zkCli.sh < /home/ubuntu/populate_zk_script")
+    
+    logger.info("STDOUT (ZooKeeper VM @ %s): %s" % (target_server_ip, stdout.read().decode()))
+    logger.info("STDERR (ZooKeeper VM @ %s): %s" % (target_server_ip, stderr.read().decode()))    
+    
     ssh_client.close()
 
 def get_args() -> argparse.Namespace:
@@ -1246,8 +1223,9 @@ def main():
             
             do_create_lambda_fs_client_vm = arguments.get("create_lambda_fs_client_vm", True)
             do_create_hops_fs_client_vm = arguments.get("create_hops_fs_client_vm", True)
-            start_zookeeper_cluster = arguments.get("start_zookeeper_cluster", True)
-            populate_zookeeper_cluster = arguments.get("populate_zookeeper_cluster", True)
+            do_start_zookeeper_cluster = arguments.get("start_zookeeper_cluster", True)
+            do_populate_zookeeper_cluster = arguments.get("populate_zookeeper_cluster", True)
+            do_update_zookeeper_config = arguments.get("update_zookeeper_config", True)
             
             skip_iam_role_creation = arguments.get("skip_iam_role_creation", False)
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
@@ -1643,7 +1621,7 @@ def main():
         logger.info("Updating ZooKeeper configuration now.")
         zk_node_public_IPs = update_zookeeper_config(ec2_client = ec2_client, instance_ids = zk_node_IDs, ssh_key_path = ssh_key_path, zookeeper_jvm_heap_size = zookeeper_jvm_heap_size, data = data)
     
-    if start_zookeeper_cluster:
+    if do_start_zookeeper_cluster:
         logger.info("Starting ZooKeeper cluster now.")
         
         # These will be done if we didn't create the VMs during the execution of this script, in which case we expect the user to pass them in.
@@ -1662,7 +1640,7 @@ def main():
             for _ in tqdm(range(21)):
                 sleep(0.25)
         
-    if populate_zookeeper_cluster:
+    if do_populate_zookeeper_cluster:
         # These will be done if we didn't create the VMs AND didn't start the VMs during the execution of this script, in which case we expect the user to pass them in.
         if zk_node_public_IPs == None:
             zk_node_public_IPs = arguments.get("zk_node_public_IPs", [])

@@ -1210,7 +1210,7 @@ def create_ndb_config(
             local_ndb_mgm_config_file.write("[api]\n")
     
     # Copy over the file we just created using SFTP.
-    sftp_client.put("./temporary/config.ini", "/var/lib/mysql-cluster/config.ini")
+    sftp.put("./temporary/config.ini", "/var/lib/mysql-cluster/config.ini")
     os.remove("./temporary/config.ini")
     
     # Create the /etc/my.cnf configuration file for the manager node.
@@ -1223,7 +1223,7 @@ def create_ndb_config(
         local_ndb_my_cnf.write("# Options for NDB Cluster processes:\n")
         local_ndb_my_cnf.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_ip)
     
-    sftp_client.put("./temporary/my.cnf", "etc/my.cnf")
+    sftp.put("./temporary/my.cnf", "etc/my.cnf")
     ssh_client.close()
     
     # TODO: The /etc/my.cnf configuration file for the data nodes.
@@ -1232,8 +1232,8 @@ def create_ndb_config(
         ssh_client.set_missing_host_key_policy(AutoAddPolicy)
         logger.info("Connecting to MySQL NDB data node VM at %s" % dn_public_ip)
         ssh_client.connect(hostname = dn_public_ip, port = 22, username = "ubuntu", pkey = key)
-        sftp_client = ssh_client.open_sftp()
-        sftp_client.put("./temporary/my.cnf", "etc/my.cnf")
+        sftp = ssh_client.open_sftp()
+        sftp.put("./temporary/my.cnf", "etc/my.cnf")
         ssh_client.close()
 
     os.remove("./temporary/my.cnf")

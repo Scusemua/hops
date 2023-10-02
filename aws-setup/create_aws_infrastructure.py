@@ -6,7 +6,9 @@ import logging
 import os 
 import paramiko 
 import requests 
-import socket 
+import shutil
+import socket
+import subprocess 
 import time 
 import urllib3
 import yaml 
@@ -1151,9 +1153,11 @@ def create_ndb_cluster(
     }
 
 def create_ndb_config(
-    ndb_mgm_ip:str = None,
+    ndb_mgm_public_ip:str = None,
+    ndb_mgm_private_ip:str = None,
     ssh_key_path = None,
     data_node_public_ips:list[str] = None,
+    data_node_private_ips:list[str] = None,
     ndb_mgm_data_directory:str = "/var/lib/mysql-cluster",
     ndb_datanode_data_directory:str = "/usr/local/mysql/data"
 ):
@@ -1163,8 +1167,12 @@ def create_ndb_config(
     """
     SFTP the script used to populate ZooKeeper with data to a ZooKeeper node and then execute it.
     """
-    if ndb_mgm_ip == None:
-        log_error("Received no NDB manager node IP address. Cannot configure the cluster.")
+    if ndb_mgm_public_ip == None:
+        log_error("Received no NDB manager node public IP address. Cannot configure the cluster.")
+        return 
+
+    if ndb_mgm_private_ip == None:
+        log_error("Received no NDB manager node private IP address. Cannot configure the cluster.")
         return 
         
     if ssh_key_path == None:
@@ -1175,8 +1183,8 @@ def create_ndb_config(
     
     ssh_client = SSHClient()
     ssh_client.set_missing_host_key_policy(AutoAddPolicy)
-    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_ip)
-    ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
+    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_public_ip)
+    ssh_client.connect(hostname = ndb_mgm_public_ip, port = 22, username = "ubuntu", pkey = key)
     logger.info("Connected! SFTP-ing base config file now.")
     
     sftp = ssh_client.open_sftp()
@@ -1184,20 +1192,22 @@ def create_ndb_config(
     if not os.path.exists("./temporary"):
         os.makedirs("./temporary")
         
+    shutil.copyfile("./ndb_configs/ndb_config.ini", "./temporary/config.ini")
+        
     next_node_id = 1
     # Write the [ndb_mgmd] portion of the config now.
-    with open("./temporary/config.ini", "w") as local_ndb_mgm_config_file:
+    with open("./temporary/config.ini", "a", newline = "") as local_ndb_mgm_config_file:
         local_ndb_mgm_config_file.write("[ndb_mgmd]\n")
         local_ndb_mgm_config_file.write("# Management process options:\n")
-        local_ndb_mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % ndb_mgm_ip)
+        local_ndb_mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % ndb_mgm_private_ip)
         local_ndb_mgm_config_file.write("DataDir=%s  # Directory for management node log files\n" % ndb_mgm_data_directory)
         local_ndb_mgm_config_file.write("NodeId=%d\n\n" % next_node_id)
         next_node_id += 1
     
         # Write the [ndbd] portions of the config now.
-        for dn_public_ip in data_node_public_ips:
+        for data_node_private_ip in data_node_private_ips:
             local_ndb_mgm_config_file.write("[ndbd]\n")
-            local_ndb_mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % dn_public_ip)
+            local_ndb_mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % data_node_private_ip)
             local_ndb_mgm_config_file.write("NodeId=%d\n" % next_node_id)
             local_ndb_mgm_config_file.write("DataDir=%s  # Directory for management node log files\n\n" % ndb_datanode_data_directory)
             next_node_id += 1
@@ -1214,14 +1224,14 @@ def create_ndb_config(
     os.remove("./temporary/config.ini")
     
     # Create the /etc/my.cnf configuration file for the manager node.
-    with open("./temporary/my.cnf", "w") as local_ndb_my_cnf:
+    with open("./temporary/my.cnf", "w", newline = "") as local_ndb_my_cnf:
         local_ndb_my_cnf.write("[mysqld]\n")
         local_ndb_my_cnf.write("# Options for mysqld process:\n")
         local_ndb_my_cnf.write("ndbcluster                      # run NDB storage engine\n")
         local_ndb_my_cnf.write("\n")
         local_ndb_my_cnf.write("[mysql_cluster]\n")
         local_ndb_my_cnf.write("# Options for NDB Cluster processes:\n")
-        local_ndb_my_cnf.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_ip)
+        local_ndb_my_cnf.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_private_ip)
     
     sftp.put("./temporary/my.cnf", "/etc/my.cnf")
     ssh_client.close()
@@ -1237,6 +1247,25 @@ def create_ndb_config(
         ssh_client.close()
 
     os.remove("./temporary/my.cnf")
+    
+    ssh_client = SSHClient()
+    ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_public_ip)
+    ssh_client.connect(hostname = ndb_mgm_public_ip, port = 22, username = "ubuntu", pkey = key)
+    logger.info("Connected! SFTP-ing base config file now.")
+    
+    sftp = ssh_client.open_sftp()
+    sftp.mkdir("/home/ubuntu/mysql_scripts")
+    
+    # Copy over .sql scripts.
+    for entry in os.scandir("./sql_scripts"):
+        if entry.path.endswith(".sql"):
+            filename = entry.name
+            dest_path = "/home/ubuntu/mysql_scripts/%s" % filename
+            logger.debug("Copying SQL script \"%s\". Local: %s. Remote: %s." % (entry.name, entry.path, dest_path))
+            sftp.put(entry.path, dest_path)
+    
+    ssh_client.close()
 
 def start_ndb_cluster(
     ndb_mgm_ip:str = None,
@@ -1268,10 +1297,6 @@ def start_ndb_cluster(
     logger.info("Connected! Starting manager now.")
     
     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndb_mgmd --skip-config-cache -f /var/lib/mysql-cluster/config.ini")
-    # if first_start:
-    #     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndb_mgmd --initial --skip-config-cache -f /var/lib/mysql-cluster/config.ini")
-    # else:
-    #     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndb_mgmd --skip-config-cache -f /var/lib/mysql-cluster/config.ini")
         
     logger.info(stdout.read().decode())
     logger.info(stderr.read().decode())
@@ -1282,25 +1307,25 @@ def start_ndb_cluster(
     
     for i in tqdm(range(len(data_node_ips))):
         data_node_ip = data_node_ips[i]
-        ssh_client = SSHClient()
-        ssh_client.set_missing_host_key_policy(AutoAddPolicy)
-        logger.info("Connecting to MySQL NDB Data Node VM at %s" % data_node_ip)
-        ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
-        logger.info("Connected! Starting the Data Node now.")
+        subprocess.call(["start_ndb_datanode.sh", data_node_ip, ssh_key_path], cwd = "ndb_configs/")
+
+def populate_mysql_ndb_tables(
+    ndb_mgm_ip:str = None,
+    ssh_key_path:str = None,
+):
+    """
+    Populate the MySQL Cluster NDB tables.
+    """
+    if ndb_mgm_ip == None:
+        log_error("Received no NDB manager node IP address. Cannot start the cluster.")
+        return 
         
-        _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndbmtd")
-        # if first_start:
-        #     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndbmtd")
-        # else:
-        #     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndbmtd")
-            
-        logger.info(stdout.read().decode())
-        logger.info(stderr.read().decode())
-        
-        ssh_client.close()
-         
-        logger.info("Started data node at %s" % data_node_ip)
-   
+    if ssh_key_path == None:
+        log_error("SSH key path cannot be None.")
+        return 
+    
+    subprocess.call(["populate_mysql_tables.sh", ndb_mgm_ip, ssh_key_path], cwd = "ndb_configs/")
+
 def get_args() -> argparse.Namespace:
     """
     Parse the commandline arguments.
@@ -1385,6 +1410,7 @@ def main():
             
             do_create_ndb_cluster = arguments.get("create_ndb_cluster", True)
             do_start_ndb_cluster = arguments.get("start_ndb_cluster", True)
+            do_populate_mysql_ndb_tables = arguments.get("populate_mysql_ndb_tables", True)
             
             skip_iam_role_creation = arguments.get("skip_iam_role_creation", False)
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
@@ -1741,12 +1767,16 @@ def main():
         data.update(ndb_resp)
         
         ndb_mgm_public_ip = ndb_resp["manager-node-public-ip"]
+        ndb_mgm_private_ip = ndb_resp["manager-node-private-ip"]
         data_node_public_ips = ndb_resp["data-node-public-ips"]
+        data_node_private_ips = ndb_resp["data-node-private-ips"]
         datanode_ids = ndb_resp["data-node-ids"]
         ndb_manager_node_id = ndb_resp["manager-node-id"]
         
         try:
-            create_ndb_config(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory, data_node_public_ips = data_node_public_ips)
+            print()
+            logger.info("Creating/updating NDB configuration now.")
+            create_ndb_config(ndb_mgm_public_ip = ndb_mgm_public_ip, ndb_mgm_private_ip = ndb_mgm_private_ip, ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory, data_node_public_ips = data_node_public_ips, data_node_private_ips = data_node_private_ips)
         except Exception as ex:
             log_error("Exception encountered while creating NDB configuration files.")
             log_error(repr(ex))
@@ -1777,9 +1807,26 @@ def main():
             data_node_public_ips = infrastructure_json.get("data-node-public-ips", None)
             datanode_ids = infrastructure_json.get("data-node-ids", None)
         
+        print()
         logger.info("Starting the MySQL NDB cluster now.")
         start_ndb_cluster(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, data_node_ips = data_node_public_ips)
         log_success("Successfully started the MySQL NDB cluster (hopefully).")
+    
+    if do_populate_mysql_ndb_tables:
+        if ndb_mgm_public_ip == None:
+            if "manager-node-public-ip" not in infrastructure_json:
+                log_error("We did not just create the MySQL NDB cluster; however, the `infrastructure_json` data does not have an entry for the NDB manager node's public IP address.")
+                log_error("Consequently, we cannot start the NDB cluster as instructed.")
+                exit(1)
+            
+            logger.debug("Retrieving NDB manager node's IP from the `infrastructure_json` data.")
+            ndb_mgm_public_ip = infrastructure_json.get("manager-node-public-ip", None)
+            ndb_manager_node_id = infrastructure_json.get("manager-node-id", None)
+        
+        print()
+        logger.info("Populating the MySQL NDB database now.")
+        populate_mysql_ndb_tables(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path)
+        log_success("Successfully populated the MySQL NDB cluster (hopefully).")
     
     zk_node_public_IPs = None
     if not skip_zookeeper_vm_creation:

@@ -2,7 +2,7 @@
 #    Do not add spaces in the file. it is also used by some deployment scripts that fail if there are redundant spaces
 #
 com.mysql.clusterj.connectstring=10.241.64.4:1186
-com.mysql.clusterj.database=hop_bram_vm
+com.mysql.clusterj.database=vanilla_hopsfs
 com.mysql.clusterj.connection.pool.size=1
 com.mysql.clusterj.max.transactions=1024
 #com.mysql.clusterj.connection.pool.nodeids=
@@ -12,7 +12,7 @@ io.hops.metadata.ndb.mysqlserver.data_source_class_name = com.mysql.jdbc.jdbc2.o
 io.hops.metadata.ndb.mysqlserver.host=10.241.64.4
 io.hops.metadata.ndb.mysqlserver.port=3306
 io.hops.metadata.ndb.mysqlserver.username=user
-io.hops.metadata.ndb.mysqlserver.password=password
+io.hops.metadata.ndb.mysqlserver.password=123password123
 io.hops.metadata.ndb.mysqlserver.connection_pool_size=1
 
 #size of the session pool. should be altreat as big as the number of active RPC handling Threads in the system

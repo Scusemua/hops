@@ -537,7 +537,7 @@ def create_ndb(
         type1_datanode = ec2_resource.create_instances(
             MinCount = 1,
             MaxCount = 1,
-            ImageId = MYSQL_NDB_MANAGER_AMI,
+            ImageId = MYSQL_NDB_DATANODE1_AMI,
             InstanceType = ndb_datanode_instance_type,
             KeyName = ssh_keypair_name,
             NetworkInterfaces = [{
@@ -571,7 +571,7 @@ def create_ndb(
         type2_datanode = ec2_resource.create_instances(
             MinCount = 1,
             MaxCount = 1,
-            ImageId = MYSQL_NDB_MANAGER_AMI,
+            ImageId = MYSQL_NDB_DATANODE2_AMI,
             InstanceType = ndb_datanode_instance_type,
             KeyName = ssh_keypair_name,
             NetworkInterfaces = [{
@@ -1125,9 +1125,11 @@ def populate_zookeeper(
     ssh_client.close()
 
 def create_ndb_mgm_config(
-    target_server_ip:str = None,
+    ndb_mgm_ip:str = None,
     ssh_key_path = None,
-    data_directory:str = "/var/lib/mysql-cluster"
+    data_node_public_ips:list[str] = None,
+    ndb_mgm_data_directory:str = "/var/lib/mysql-cluster",
+    ndb_datanode_data_directory:str = "/usr/local/mysql/data"
 ):
     """
     Create/update the configuration of the MySQL NDB manager node.
@@ -1135,7 +1137,7 @@ def create_ndb_mgm_config(
     """
     SFTP the script used to populate ZooKeeper with data to a ZooKeeper node and then execute it.
     """
-    if target_server_ip == None:
+    if ndb_mgm_ip == None:
         log_error("Received no NDB manager node IP address. Cannot start the server.")
         return 
         
@@ -1147,8 +1149,8 @@ def create_ndb_mgm_config(
     
     ssh_client = SSHClient()
     ssh_client.set_missing_host_key_policy(AutoAddPolicy)
-    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % target_server_ip)
-    ssh_client.connect(hostname = target_server_ip, port = 22, username = "ubuntu", pkey = key)
+    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_ip)
+    ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
     logger.info("Connected! SFTP-ing base config file now.")
     
     sftp = ssh_client.open_sftp()
@@ -1158,12 +1160,29 @@ def create_ndb_mgm_config(
     sftp_client = ssh_client.open_sftp()
     mgm_config_file = sftp_client.open("/var/lib/mysql-cluster/config.ini", mode = "a")
     
-    # Write the manager config now.
+    next_node_id = 1
+    # Write the [ndb_mgmd] portion of the config now.
     mgm_config_file.write("[ndb_mgmd]\n")
     mgm_config_file.write("# Management process options:\n")
-    mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % target_server_ip)
-    mgm_config_file.write("DataDir=%s  # Directory for management node log files\n" % data_directory)
-    mgm_config_file.write("NodeId=1\n\n")
+    mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % ndb_mgm_ip)
+    mgm_config_file.write("DataDir=%s  # Directory for management node log files\n" % ndb_mgm_data_directory)
+    mgm_config_file.write("NodeId=%d\n\n" % next_node_id)
+    next_node_id += 1
+    
+    # Write the [ndbd] portions of the config now.
+    for dn_public_ip in data_node_public_ips:
+        mgm_config_file.write("[ndbd]\n")
+        mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % dn_public_ip)
+        mgm_config_file.write("NodeId=%d\n" % next_node_id)
+        mgm_config_file.write("DataDir=%s  # Directory for management node log files\n\n" % ndb_datanode_data_directory)
+        next_node_id += 1
+    
+    # There can be 255 nodes. Configure the cluster to allow for this number of nodes in total by adding the appropriate number of [api] tags.
+    # This is calculated by subtracting from 255 the value (1 + NumDataNodes), where the 1 is for the NDB manager server.
+    num_api_nodes = 255 - (1 + len(data_node_public_ips))
+    
+    for _ in range(0, num_api_nodes):
+        mgm_config_file.write("[api]\n")
     
     ssh_client.close()
     
@@ -1266,7 +1285,21 @@ def main():
             
             ssh_keypair_name = arguments.get("ssh_keypair_name", None)
             ssh_key_path = arguments.get("ssh_key_path", None)
+            
             num_ndb_datanodes = arguments.get("num_ndb_datanodes", 4)
+            ndb_mgm_data_directory = arguments.get("ndb_mgm_data_directory", "/var/lib/mysql-cluster")
+            ndb_datanode_data_directory = arguments.get("ndb_datanode_data_directory", "/usr/local/mysql/data")
+
+            if ndb_mgm_data_directory != "/var/lib/mysql-cluster":
+                log_warning("You specified non-default NDB MGM data directory of \"%s\"." % ndb_mgm_data_directory)
+                log_warning("The default NDB MGM data directory is \"/var/lib/mysql-cluster\".")
+                log_warning("Changing this value can break the NDB deployment unless you are careful and know what you're doing.")
+            
+            if ndb_datanode_data_directory != "/usr/local/mysql/data":
+                log_warning("You specified non-default NDB datanode data directory of \"%s\"." % ndb_datanode_data_directory)
+                log_warning("The default NDB datanode data directory is \"/usr/local/mysql/data\".")
+                log_warning("Changing this value can break the NDB deployment unless you are careful and know what you're doing.")
+            
             num_lambda_fs_zk_vms = arguments.get("num_lambda_fs_zk_vms", 3)
             
             lfs_client_ags_it = arguments.get("lfs_client_autoscaling_group_instance_type", "r5.4xlarge")
@@ -1282,7 +1315,6 @@ def main():
             do_create_hops_fs_client_vm = arguments.get("create_hops_fs_client_vm", True)
             do_start_zookeeper_cluster = arguments.get("start_zookeeper_cluster", True)
             do_populate_zookeeper_cluster = arguments.get("populate_zookeeper_cluster", True)
-            do_update_zookeeper_config = arguments.get("update_zookeeper_config", True)
             
             skip_iam_role_creation = arguments.get("skip_iam_role_creation", False)
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
@@ -1657,7 +1689,7 @@ def main():
         
         data.update(ndb_resp)
         
-        create_ndb_mgm_config()
+        create_ndb_mgm_config(target_server_ip = ndb_resp["manager-node-public-ip"], ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory)
     
     zk_node_public_IPs = None
     if not skip_zookeeper_vm_creation:

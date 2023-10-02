@@ -1233,7 +1233,7 @@ def create_ndb_config(
         logger.info("Connecting to MySQL NDB data node VM at %s" % dn_public_ip)
         ssh_client.connect(hostname = dn_public_ip, port = 22, username = "ubuntu", pkey = key)
         sftp = ssh_client.open_sftp()
-        sftp.put("./temporary/my.cnf", "etc/my.cnf")
+        sftp.put("./temporary/my.cnf", "/etc/my.cnf")
         ssh_client.close()
 
     os.remove("./temporary/my.cnf")
@@ -1754,6 +1754,7 @@ def main():
             ec2_client.terminate_instances(InstanceIds = [ndb_manager_node_id])
             log_error("Terminating the %d NDB data node(s)." % len(datanode_ids))
             ec2_client.terminate_instances(InstanceIds = datanode_ids)
+            raise ex 
     
     if do_start_ndb_cluster:
         if ndb_mgm_public_ip == None:

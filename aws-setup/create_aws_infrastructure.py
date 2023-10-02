@@ -468,8 +468,12 @@ def create_ndb(
     This includes a total of 5 EC2 VMs: one NDB "master" node and four NDB data nodes.
     
     Returns a dictionary {
-        "manager-node-id": the ID of the manager node VM
-        "data-node-ids": list of IDs of the data node VMs
+        "manager-node-id": the ID of the manager node VM,
+        "manager-node-public-ip": public IPv4 of manager node VM,
+        "manager-node-private-ip": public IPv4 of manager node VM,
+        "data-node-ids": list of IDs of the data node VMs,
+        "data-node-public-ips": list of public IPv4s of the data node VMs,
+        "data-node-private-ips": list of private IPv4s of the data node VMs
     }
     """
     if ec2_resource == None:
@@ -519,7 +523,9 @@ def create_ndb(
     
     type1_datanodes = []
     type2_datanodes = []
-    datanodes = [] 
+    datanode_ids = [] 
+    datanode_public_ips = []
+    datnaode_private_ips = []
     
     logger.info("Creating %d Type 1 MySQL NDB Data Node(s)." % num_type_1_datanodes)
     
@@ -553,7 +559,9 @@ def create_ndb(
             }]   
         ) # end of call to ec2_client.create_instances()
         type1_datanodes.append(type1_datanode[0].id)
-        datanodes.append(type1_datanode[0].id)
+        datanode_ids.append(type1_datanode[0].id)
+        datanode_public_ips.append(type1_datanode[0].public_ip_address)
+        datnaode_private_ips.append(type1_datanode[0].private_ip_address)
     
     logger.info("Creating %d Type 2 MySQL NDB Data Node(s)." % num_type_2_datanodes)
     
@@ -585,13 +593,19 @@ def create_ndb(
             }], 
         ) # end of call to ec2_client.create_instances()
         type2_datanodes.append(type2_datanode[0].id)
-        datanodes.append(type2_datanode[0].id)
+        datanode_ids.append(type2_datanode[0].id)
+        datanode_public_ips.append(type2_datanode[0].public_ip_address)
+        datnaode_private_ips.append(type2_datanode[0].private_ip_address)
     
     logger.info("Created NDB EC2 instances.")
-    logger.info("Created 1 NDB Manager Node and %d NDB DataNode(s)." % len(datanodes))
+    logger.info("Created 1 NDB Manager Node and %d NDB DataNode(s)." % len(datanode_ids))
     return {
         "manager-node-id": ndb_manager_instance[0].id,
-        "data-node-ids": datanodes
+        "manager-node-public-ip": ndb_manager_instance[0].public_ip_address,
+        "manager-node-private-ip": ndb_manager_instance[0].private_ip_address,
+        "data-node-ids": datanode_ids,
+        "data-node-public-ips": datanode_public_ips,
+        "data-node-private-ips": datnaode_private_ips
     }
 
 def create_lambda_fs_zookeeper_vms(
@@ -1110,6 +1124,49 @@ def populate_zookeeper(
     
     ssh_client.close()
 
+def create_ndb_mgm_config(
+    target_server_ip:str = None,
+    ssh_key_path = None,
+    data_directory:str = "/var/lib/mysql-cluster"
+):
+    """
+    Create/update the configuration of the MySQL NDB manager node.
+    """
+    """
+    SFTP the script used to populate ZooKeeper with data to a ZooKeeper node and then execute it.
+    """
+    if target_server_ip == None:
+        log_error("Received no NDB manager node IP address. Cannot start the server.")
+        return 
+        
+    if ssh_key_path == None:
+        log_error("SSH key path cannot be None.")
+        exit(1)
+        
+    key = RSAKey(filename = ssh_key_path)
+    
+    ssh_client = SSHClient()
+    ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % target_server_ip)
+    ssh_client.connect(hostname = target_server_ip, port = 22, username = "ubuntu", pkey = key)
+    logger.info("Connected! SFTP-ing base config file now.")
+    
+    sftp = ssh_client.open_sftp()
+    sftp.put("./ndb_configs/ndb_config.ini", "/var/lib/mysql-cluster/config.ini")
+    
+    # Now open the file we just SFTP'd.
+    sftp_client = ssh_client.open_sftp()
+    mgm_config_file = sftp_client.open("/var/lib/mysql-cluster/config.ini", mode = "a")
+    
+    # Write the manager config now.
+    mgm_config_file.write("[ndb_mgmd]\n")
+    mgm_config_file.write("# Management process options:\n")
+    mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % target_server_ip)
+    mgm_config_file.write("DataDir=%s  # Directory for management node log files\n" % data_directory)
+    mgm_config_file.write("NodeId=1\n\n")
+    
+    ssh_client.close()
+    
 def get_args() -> argparse.Namespace:
     """
     Parse the commandline arguments.
@@ -1599,6 +1656,8 @@ def main():
         log_success("Created %d NDB Data Node(s): %s" % (len(ndb_resp["data-node-ids"]), str(ndb_resp["data-node-ids"])))
         
         data.update(ndb_resp)
+        
+        create_ndb_mgm_config()
     
     zk_node_public_IPs = None
     if not skip_zookeeper_vm_creation:

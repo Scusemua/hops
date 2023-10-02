@@ -51,14 +51,17 @@ populate_zookeeper_cluster: True
 # in megabytes. used 12000 in evaluation.
 zookeeper_jvm_heap_size: 4000
 
+# If True, create the MySQL NDB Cluster VMs (manager node and data nodes).
+create_ndb_cluster: True
+# If True, start the MySQL NDB Cluster VMs (manager node and data nodes).
+start_ndb_cluster: True 
+
 # If True, do NOT create the IAM role used by the AWS EKS cluster.
 skip_iam_role_creation: False
 # If True, do NOT create the VPC used by HopsFS and LambdaFS.
 skip_vpc_creation: False
 # If True, do NOT create the AWS EKS cluster.
 skip_eks: False
-# If True, do NOT create the MySQL NDB Cluster VMs (manager node and data nodes).
-skip_ndb: False
 # If True, do NOT create the ZooKeeper VMs (used by Lambda-FS).
 skip_zookeeper_vm_creation: False
 # If True, do NOT create the AWS EC2 Launch Templates used for the Lambda-FS and HopsFS client VMs.

@@ -27,9 +27,9 @@ and to replicate the experiments conducted in the paper, "".
 This script should be executed from 
 """
 
-MYSQL_NDB_MANAGER_AMI = "ami-087b84fd7823f5eff" # "ami-0a0e055a66e58df2c"
-MYSQL_NDB_DATANODE1_AMI = "ami-03c289589fa18edc3" # "ami-075e47140b5fd017a"
-MYSQL_NDB_DATANODE2_AMI = "ami-0645e88cb1e2bb959" # "ami-0fdbf79b2ec52386e"
+MYSQL_NDB_MANAGER_AMI = "ami-0959eff7dbad22195" # "ami-0a0e055a66e58df2c"
+MYSQL_NDB_DATANODE1_AMI = "ami-05792675c2d4527ac" # "ami-075e47140b5fd017a"
+MYSQL_NDB_DATANODE2_AMI = "ami-0f81038ce29b2523a" # "ami-0fdbf79b2ec52386e"
 HOPSFS_CLIENT_AMI = "ami-01d2cba66e4fe4e1e"
 HOPSFS_NAMENODE_AMI = "ami-0cc88cd1a5dfaef18"
 LAMBDA_FS_CLIENT_AMI = "ami-027b04d5fece878a8"
@@ -452,187 +452,6 @@ def create_lambda_fs_client_vm(
     )
     
     return lambda_fs_client_vm[0].id  
-
-def create_ndb(
-    ec2_resource = None,
-    ec2_client = None,
-    ssh_keypair_name:str = None,
-    num_datanodes:int = 4,
-    subnet_id:str = None,
-    ndb_manager_instance_type:str = "r5.4xlarge",
-    ndb_datanode_instance_type:str = "r5.4xlarge",
-    security_group_ids:list = [],
-): 
-    """
-    Create the required AWS infrastructure for the MySQL NDB cluster. 
-    
-    This includes a total of 5 EC2 VMs: one NDB "master" node and four NDB data nodes.
-    
-    Returns a dictionary {
-        "manager-node-id": the ID of the manager node VM,
-        "manager-node-public-ip": public IPv4 of manager node VM,
-        "manager-node-private-ip": public IPv4 of manager node VM,
-        "data-node-ids": list of IDs of the data node VMs,
-        "data-node-public-ips": list of public IPv4s of the data node VMs,
-        "data-node-private-ips": list of private IPv4s of the data node VMs
-    }
-    """
-    if ec2_resource == None:
-        log_error("EC2 resource cannot be null when creating the NDB cluster.")
-        exit(1)
-    
-    if ssh_keypair_name == None:
-        log_error("SSH keypair name cannot be null when creating the NDB cluster.")
-        exit(1)
-        
-    
-    logger.info("Creating 1 MySQL NDB Manager Node.")
-    
-    # Create the NDB manager server.
-    ndb_manager_instance = ec2_resource.create_instances(
-        MinCount = 1,
-        MaxCount = 1,
-        ImageId = MYSQL_NDB_MANAGER_AMI,
-        InstanceType = ndb_manager_instance_type,
-        KeyName = ssh_keypair_name,
-        NetworkInterfaces = [{
-            "AssociatePublicIpAddress": True,
-            "DeviceIndex": 0,
-            "SubnetId": subnet_id,
-                "Groups": security_group_ids
-        }],
-        TagSpecifications=[{
-            'ResourceType': 'instance',
-            'Tags': [{
-                        'Key': 'Name',
-                        'Value': "ndb-manager-node"
-                    },
-                    {
-                        'Key': 'Project',
-                        'Value': 'LambdaFS'
-                    }]
-        }]  
-    )
-    
-    num_type_1_datanodes = num_datanodes // 2
-    if num_datanodes % 2 == 0:
-        num_type_2_datanodes = num_type_1_datanodes
-    else:
-        num_type_2_datanodes = num_type_1_datanodes+1 
-        
-    logger.info("Creating %d type 1 NDB data node(s) and %d type 2 NDB data node(s)." % (num_type_1_datanodes, num_type_2_datanodes))
-    
-    type1_datanodes = []
-    type2_datanodes = []
-    datanode_ids = [] 
-    datnaode_private_ips = []
-    
-    logger.info("Creating %d Type 1 MySQL NDB Data Node(s)." % num_type_1_datanodes)
-    
-    ndb_datanode_index = 0
-    for _ in range(0, num_type_1_datanodes):
-        instance_name = "ndb-datanode-type1-%d" % ndb_datanode_index
-        ndb_datanode_index += 1
-        # Create `num_datanodes` NDB data nodes.
-        type1_datanode = ec2_resource.create_instances(
-            MinCount = 1,
-            MaxCount = 1,
-            ImageId = MYSQL_NDB_DATANODE1_AMI,
-            InstanceType = ndb_datanode_instance_type,
-            KeyName = ssh_keypair_name,
-            NetworkInterfaces = [{
-                "AssociatePublicIpAddress": True,
-                "DeviceIndex": 0,
-                "SubnetId": subnet_id,
-                "Groups": security_group_ids
-            }],
-            TagSpecifications=[{
-                'ResourceType': 'instance',
-                'Tags': [{
-                            'Key': 'Name',
-                            'Value': instance_name
-                        },
-                        {
-                            'Key': 'Project',
-                            'Value': 'LambdaFS'
-                        }]
-            }]   
-        ) # end of call to ec2_client.create_instances()
-        type1_datanodes.append(type1_datanode[0].id)
-        datanode_ids.append(type1_datanode[0].id)
-        datnaode_private_ips.append(type1_datanode[0].private_ip_address)
-    
-    logger.info("Creating %d Type 2 MySQL NDB Data Node(s)." % num_type_2_datanodes)
-    
-    for _ in range(0, num_type_2_datanodes):
-        instance_name = "ndb-datanode-type2-%d" % ndb_datanode_index
-        ndb_datanode_index += 1
-        type2_datanode = ec2_resource.create_instances(
-            MinCount = 1,
-            MaxCount = 1,
-            ImageId = MYSQL_NDB_DATANODE2_AMI,
-            InstanceType = ndb_datanode_instance_type,
-            KeyName = ssh_keypair_name,
-            NetworkInterfaces = [{
-                "AssociatePublicIpAddress": True,
-                "DeviceIndex": 0,
-                "SubnetId": subnet_id,
-                "Groups": security_group_ids
-            }],
-            TagSpecifications=[{
-                'ResourceType': 'instance',
-                'Tags': [{
-                            'Key': 'Name',
-                            'Value': instance_name
-                        },
-                        {
-                            'Key': 'Project',
-                            'Value': 'LambdaFS'
-                        }]
-            }], 
-        ) # end of call to ec2_client.create_instances()
-        type2_datanodes.append(type2_datanode[0].id)
-        datanode_ids.append(type2_datanode[0].id)
-        datnaode_private_ips.append(type2_datanode[0].private_ip_address)
-    
-    logger.info("Created NDB EC2 instances.")
-    logger.info("Created 1 NDB Manager Node and %d NDB DataNode(s)." % len(datanode_ids))
-    logger.info("Sleeping for 30 seconds while the NDB VMs start-up.")
-    for i in tqdm(range(120)):
-        sleep(0.25)
-    
-    # Resolving this separately/explicitly, as it kept being None when I tried to access the field, even after waiting.
-    ndb_mgm_public_ip = ndb_manager_instance[0].public_ip_address
-    if ndb_mgm_public_ip == None:
-        ndb_mgm_desc_resp = ec2_client.describe_instances(InstanceIds = [ndb_manager_instance[0].id])
-        ndb_mgm_public_ip = ndb_mgm_desc_resp['Reservations'][0]['Instances'][0]['PublicIpAddress']
-        
-        if ndb_mgm_public_ip == None:
-            log_error("Cannot resolve MySQL Cluster NDB manager node public IPv4.")
-            log_error("Terminating NDB manager node.")
-            ec2_client.terminate_instances(InstanceIds = [ndb_manager_instance[0].id])
-            log_error("Terminating the %d NDB data node(s)." % len(datanode_ids))
-            ec2_client.terminate_instances(InstanceIds = datanode_ids)
-            
-            exit(1)
-        
-        logger.debug("IPv4 of NDB manager node: %s" % ndb_mgm_public_ip)
-    
-    datanode_public_ips = []
-    ndb_dn_resp = ec2_client.describe_instances(InstanceIds = datanode_ids)
-    for i,reservation in enumerate(ndb_dn_resp["Reservations"]):
-        dn_public_ip = reservation['Instances'][0]['PublicIpAddress']
-        datanode_public_ips.append(dn_public_ip)
-        logger.debug("IPv4 of NDB data node #%d: %s" % (i, dn_public_ip))
-    
-    return {
-        "manager-node-id": ndb_manager_instance[0].id,
-        "manager-node-public-ip": ndb_mgm_public_ip,
-        "manager-node-private-ip": ndb_manager_instance[0].private_ip_address,
-        "data-node-ids": datanode_ids,
-        "data-node-public-ips": datanode_public_ips,
-        "data-node-private-ips": datnaode_private_ips
-    }
 
 def create_lambda_fs_zookeeper_vms(
     ec2_resource = None,
@@ -1150,7 +969,188 @@ def populate_zookeeper(
     
     ssh_client.close()
 
-def create_ndb_mgm_config(
+def create_ndb_cluster(
+    ec2_resource = None,
+    ec2_client = None,
+    ssh_keypair_name:str = None,
+    num_datanodes:int = 4,
+    subnet_id:str = None,
+    ndb_manager_instance_type:str = "r5.4xlarge",
+    ndb_datanode_instance_type:str = "r5.4xlarge",
+    security_group_ids:list = [],
+): 
+    """
+    Create the required AWS infrastructure for the MySQL NDB cluster. 
+    
+    This includes a total of 5 EC2 VMs: one NDB "master" node and four NDB data nodes.
+    
+    Returns a dictionary {
+        "manager-node-id": the ID of the manager node VM,
+        "manager-node-public-ip": public IPv4 of manager node VM,
+        "manager-node-private-ip": public IPv4 of manager node VM,
+        "data-node-ids": list of IDs of the data node VMs,
+        "data-node-public-ips": list of public IPv4s of the data node VMs,
+        "data-node-private-ips": list of private IPv4s of the data node VMs
+    }
+    """
+    if ec2_resource == None:
+        log_error("EC2 resource cannot be null when creating the NDB cluster.")
+        exit(1)
+    
+    if ssh_keypair_name == None:
+        log_error("SSH keypair name cannot be null when creating the NDB cluster.")
+        exit(1)
+        
+    
+    logger.info("Creating 1 MySQL NDB Manager Node.")
+    
+    # Create the NDB manager server.
+    ndb_manager_instance = ec2_resource.create_instances(
+        MinCount = 1,
+        MaxCount = 1,
+        ImageId = MYSQL_NDB_MANAGER_AMI,
+        InstanceType = ndb_manager_instance_type,
+        KeyName = ssh_keypair_name,
+        NetworkInterfaces = [{
+            "AssociatePublicIpAddress": True,
+            "DeviceIndex": 0,
+            "SubnetId": subnet_id,
+                "Groups": security_group_ids
+        }],
+        TagSpecifications=[{
+            'ResourceType': 'instance',
+            'Tags': [{
+                        'Key': 'Name',
+                        'Value': "ndb-manager-node"
+                    },
+                    {
+                        'Key': 'Project',
+                        'Value': 'LambdaFS'
+                    }]
+        }]  
+    )
+    
+    num_type_1_datanodes = num_datanodes // 2
+    if num_datanodes % 2 == 0:
+        num_type_2_datanodes = num_type_1_datanodes
+    else:
+        num_type_2_datanodes = num_type_1_datanodes+1 
+        
+    logger.info("Creating %d type 1 NDB data node(s) and %d type 2 NDB data node(s)." % (num_type_1_datanodes, num_type_2_datanodes))
+    
+    type1_datanodes = []
+    type2_datanodes = []
+    datanode_ids = [] 
+    datnaode_private_ips = []
+    
+    logger.info("Creating %d Type 1 MySQL NDB Data Node(s)." % num_type_1_datanodes)
+    
+    ndb_datanode_index = 0
+    for _ in range(0, num_type_1_datanodes):
+        instance_name = "ndb-datanode-type1-%d" % ndb_datanode_index
+        ndb_datanode_index += 1
+        # Create `num_datanodes` NDB data nodes.
+        type1_datanode = ec2_resource.create_instances(
+            MinCount = 1,
+            MaxCount = 1,
+            ImageId = MYSQL_NDB_DATANODE1_AMI,
+            InstanceType = ndb_datanode_instance_type,
+            KeyName = ssh_keypair_name,
+            NetworkInterfaces = [{
+                "AssociatePublicIpAddress": True,
+                "DeviceIndex": 0,
+                "SubnetId": subnet_id,
+                "Groups": security_group_ids
+            }],
+            TagSpecifications=[{
+                'ResourceType': 'instance',
+                'Tags': [{
+                            'Key': 'Name',
+                            'Value': instance_name
+                        },
+                        {
+                            'Key': 'Project',
+                            'Value': 'LambdaFS'
+                        }]
+            }]   
+        ) # end of call to ec2_client.create_instances()
+        type1_datanodes.append(type1_datanode[0].id)
+        datanode_ids.append(type1_datanode[0].id)
+        datnaode_private_ips.append(type1_datanode[0].private_ip_address)
+    
+    logger.info("Creating %d Type 2 MySQL NDB Data Node(s)." % num_type_2_datanodes)
+    
+    for _ in range(0, num_type_2_datanodes):
+        instance_name = "ndb-datanode-type2-%d" % ndb_datanode_index
+        ndb_datanode_index += 1
+        type2_datanode = ec2_resource.create_instances(
+            MinCount = 1,
+            MaxCount = 1,
+            ImageId = MYSQL_NDB_DATANODE2_AMI,
+            InstanceType = ndb_datanode_instance_type,
+            KeyName = ssh_keypair_name,
+            NetworkInterfaces = [{
+                "AssociatePublicIpAddress": True,
+                "DeviceIndex": 0,
+                "SubnetId": subnet_id,
+                "Groups": security_group_ids
+            }],
+            TagSpecifications=[{
+                'ResourceType': 'instance',
+                'Tags': [{
+                            'Key': 'Name',
+                            'Value': instance_name
+                        },
+                        {
+                            'Key': 'Project',
+                            'Value': 'LambdaFS'
+                        }]
+            }], 
+        ) # end of call to ec2_client.create_instances()
+        type2_datanodes.append(type2_datanode[0].id)
+        datanode_ids.append(type2_datanode[0].id)
+        datnaode_private_ips.append(type2_datanode[0].private_ip_address)
+    
+    logger.info("Created NDB EC2 instances.")
+    logger.info("Created 1 NDB Manager Node and %d NDB DataNode(s)." % len(datanode_ids))
+    logger.info("Sleeping for 30 seconds while the NDB VMs start-up.")
+    for i in tqdm(range(120)):
+        sleep(0.25)
+    
+    # Resolving this separately/explicitly, as it kept being None when I tried to access the field, even after waiting.
+    ndb_mgm_public_ip = ndb_manager_instance[0].public_ip_address
+    if ndb_mgm_public_ip == None:
+        ndb_mgm_desc_resp = ec2_client.describe_instances(InstanceIds = [ndb_manager_instance[0].id])
+        ndb_mgm_public_ip = ndb_mgm_desc_resp['Reservations'][0]['Instances'][0]['PublicIpAddress']
+        
+        if ndb_mgm_public_ip == None:
+            log_error("Cannot resolve MySQL Cluster NDB manager node public IPv4.")
+            log_error("Terminating NDB manager node.")
+            ec2_client.terminate_instances(InstanceIds = [ndb_manager_instance[0].id])
+            log_error("Terminating the %d NDB data node(s)." % len(datanode_ids))
+            ec2_client.terminate_instances(InstanceIds = datanode_ids)
+            
+            exit(1)
+        
+        logger.debug("IPv4 of NDB manager node: %s" % ndb_mgm_public_ip)
+    
+    datanode_public_ips = []
+    ndb_dn_resp = ec2_client.describe_instances(InstanceIds = datanode_ids)
+    for i,reservation in enumerate(ndb_dn_resp["Reservations"]):
+        dn_public_ip = reservation['Instances'][0]['PublicIpAddress']
+        datanode_public_ips.append(dn_public_ip)
+        logger.debug("IPv4 of NDB data node #%d: %s" % (i, dn_public_ip))
+    
+    return {
+        "manager-node-id": ndb_manager_instance[0].id,
+        "manager-node-public-ip": ndb_mgm_public_ip,
+        "manager-node-private-ip": ndb_manager_instance[0].private_ip_address,
+        "data-node-ids": datanode_ids,
+        "data-node-public-ips": datanode_public_ips,
+        "data-node-private-ips": datnaode_private_ips
+    }
+
+def create_ndb_config(
     ndb_mgm_ip:str = None,
     ssh_key_path = None,
     data_node_public_ips:list[str] = None,
@@ -1164,7 +1164,7 @@ def create_ndb_mgm_config(
     SFTP the script used to populate ZooKeeper with data to a ZooKeeper node and then execute it.
     """
     if ndb_mgm_ip == None:
-        log_error("Received no NDB manager node IP address. Cannot start the server.")
+        log_error("Received no NDB manager node IP address. Cannot configure the cluster.")
         return 
         
     if ssh_key_path == None:
@@ -1180,49 +1180,50 @@ def create_ndb_mgm_config(
     logger.info("Connected! SFTP-ing base config file now.")
     
     sftp = ssh_client.open_sftp()
-    sftp.put("./ndb_configs/ndb_config.ini", "/var/lib/mysql-cluster/config.ini")
     
-    # Now open the file we just SFTP'd.
-    sftp_client = ssh_client.open_sftp()
-    mgm_config_file = sftp_client.open("/var/lib/mysql-cluster/config.ini", mode = "a")
-    
+    if not os.path.exists("./temporary"):
+        os.makedirs("./temporary")
+        
     next_node_id = 1
     # Write the [ndb_mgmd] portion of the config now.
-    mgm_config_file.write("[ndb_mgmd]\n")
-    mgm_config_file.write("# Management process options:\n")
-    mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % ndb_mgm_ip)
-    mgm_config_file.write("DataDir=%s  # Directory for management node log files\n" % ndb_mgm_data_directory)
-    mgm_config_file.write("NodeId=%d\n\n" % next_node_id)
-    next_node_id += 1
-    
-    # Write the [ndbd] portions of the config now.
-    for dn_public_ip in data_node_public_ips:
-        mgm_config_file.write("[ndbd]\n")
-        mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % dn_public_ip)
-        mgm_config_file.write("NodeId=%d\n" % next_node_id)
-        mgm_config_file.write("DataDir=%s  # Directory for management node log files\n\n" % ndb_datanode_data_directory)
+    with open("./temporary/config.ini", "w") as local_ndb_mgm_config_file:
+        local_ndb_mgm_config_file.write("[ndb_mgmd]\n")
+        local_ndb_mgm_config_file.write("# Management process options:\n")
+        local_ndb_mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % ndb_mgm_ip)
+        local_ndb_mgm_config_file.write("DataDir=%s  # Directory for management node log files\n" % ndb_mgm_data_directory)
+        local_ndb_mgm_config_file.write("NodeId=%d\n\n" % next_node_id)
         next_node_id += 1
     
-    # There can be 255 nodes. Configure the cluster to allow for this number of nodes in total by adding the appropriate number of [api] tags.
-    # This is calculated by subtracting from 255 the value (1 + NumDataNodes), where the 1 is for the NDB manager server.
-    num_api_nodes = 255 - (1 + len(data_node_public_ips))
+        # Write the [ndbd] portions of the config now.
+        for dn_public_ip in data_node_public_ips:
+            local_ndb_mgm_config_file.write("[ndbd]\n")
+            local_ndb_mgm_config_file.write("HostName=%s          # Hostname or IP address of management node\n" % dn_public_ip)
+            local_ndb_mgm_config_file.write("NodeId=%d\n" % next_node_id)
+            local_ndb_mgm_config_file.write("DataDir=%s  # Directory for management node log files\n\n" % ndb_datanode_data_directory)
+            next_node_id += 1
+
+        # There can be 255 nodes. Configure the cluster to allow for this number of nodes in total by adding the appropriate number of [api] tags.
+        # This is calculated by subtracting from 255 the value (1 + NumDataNodes), where the 1 is for the NDB manager server.
+        num_api_nodes = 255 - (1 + len(data_node_public_ips))
+        
+        for _ in range(0, num_api_nodes):
+            local_ndb_mgm_config_file.write("[api]\n")
     
-    for _ in range(0, num_api_nodes):
-        mgm_config_file.write("[api]\n")
-    
-    mgm_config_file.close() 
+    # Copy over the file we just created using SFTP.
+    sftp_client.put("./temporary/config.ini", "/var/lib/mysql-cluster/config.ini")
+    os.remove("./temporary/config.ini")
     
     # Create the /etc/my.cnf configuration file for the manager node.
-    my_cnf_mgm_file = sftp_client.open("/etc/my.cnf", mode = "w")
-    my_cnf_mgm_file.write("[mysqld]\n")
-    my_cnf_mgm_file.write("# Options for mysqld process:\n")
-    my_cnf_mgm_file.write("ndbcluster                      # run NDB storage engine\n")
-    my_cnf_mgm_file.write("\n")
-    my_cnf_mgm_file.write("[mysql_cluster]\n")
-    my_cnf_mgm_file.write("# Options for NDB Cluster processes:\n")
-    my_cnf_mgm_file.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_ip)
-    my_cnf_mgm_file.close() 
+    with open("./temporary/my.cnf", "w") as local_ndb_my_cnf:
+        local_ndb_my_cnf.write("[mysqld]\n")
+        local_ndb_my_cnf.write("# Options for mysqld process:\n")
+        local_ndb_my_cnf.write("ndbcluster                      # run NDB storage engine\n")
+        local_ndb_my_cnf.write("\n")
+        local_ndb_my_cnf.write("[mysql_cluster]\n")
+        local_ndb_my_cnf.write("# Options for NDB Cluster processes:\n")
+        local_ndb_my_cnf.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_ip)
     
+    sftp_client.put("./temporary/my.cnf", "etc/my.cnf")
     ssh_client.close()
     
     # TODO: The /etc/my.cnf configuration file for the data nodes.
@@ -1230,19 +1231,76 @@ def create_ndb_mgm_config(
         ssh_client = SSHClient()
         ssh_client.set_missing_host_key_policy(AutoAddPolicy)
         logger.info("Connecting to MySQL NDB data node VM at %s" % dn_public_ip)
-        ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
+        ssh_client.connect(hostname = dn_public_ip, port = 22, username = "ubuntu", pkey = key)
         sftp_client = ssh_client.open_sftp()
+        sftp_client.put("./temporary/my.cnf", "etc/my.cnf")
+        ssh_client.close()
+
+    os.remove("./temporary/my.cnf")
+
+def start_ndb_cluster(
+    ndb_mgm_ip:str = None,
+    data_node_ips:list[str] = None,
+    ssh_key_path:str = None,
+    #first_start:bool = False # If True, then we start the Cluster as if it is a brand new cluster.
+):
+    """
+    Start the MySQL NDB cluster. 
+    """
+    if ndb_mgm_ip == None:
+        log_error("Received no NDB manager node IP address. Cannot start the cluster.")
+        return 
+
+    if data_node_ips == None or len(data_node_ips) == 0:
+        log_error("Received no NDB data node IP addresses. Cannot start the cluster.")
+        return 
         
-        my_cnf_dn_file = sftp_client.open("/etc/my.cnf", mode = "w")
-        my_cnf_dn_file.write("[mysqld]\n")
-        my_cnf_dn_file.write("# Options for mysqld process:\n")
-        my_cnf_dn_file.write("ndbcluster                      # run NDB storage engine\n")
-        my_cnf_dn_file.write("\n")
-        my_cnf_dn_file.write("[mysql_cluster]\n")
-        my_cnf_dn_file.write("# Options for NDB Cluster processes:\n")
-        my_cnf_dn_file.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_ip)
-        my_cnf_dn_file.close() 
+    if ssh_key_path == None:
+        log_error("SSH key path cannot be None.")
+        return 
     
+    key = RSAKey(filename = ssh_key_path)
+
+    ssh_client = SSHClient()
+    ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_ip)
+    ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
+    logger.info("Connected! Starting manager now.")
+    
+    _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndb_mgmd --skip-config-cache -f /var/lib/mysql-cluster/config.ini")
+    # if first_start:
+    #     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndb_mgmd --initial --skip-config-cache -f /var/lib/mysql-cluster/config.ini")
+    # else:
+    #     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndb_mgmd --skip-config-cache -f /var/lib/mysql-cluster/config.ini")
+        
+    logger.info(stdout.read().decode())
+    logger.info(stderr.read().decode())
+    
+    ssh_client.close()
+    
+    logger.info("Started manager (hopefully). Next, starting data nodes.")
+    
+    for i in tqdm(range(len(data_node_ips))):
+        data_node_ip = data_node_ips[i]
+        ssh_client = SSHClient()
+        ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+        logger.info("Connecting to MySQL NDB Data Node VM at %s" % data_node_ip)
+        ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
+        logger.info("Connected! Starting the Data Node now.")
+        
+        _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndbmtd")
+        # if first_start:
+        #     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndbmtd")
+        # else:
+        #     _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndbmtd")
+            
+        logger.info(stdout.read().decode())
+        logger.info(stderr.read().decode())
+        
+        ssh_client.close()
+         
+        logger.info("Started data node at %s" % data_node_ip)
+   
 def get_args() -> argparse.Namespace:
     """
     Parse the commandline arguments.
@@ -1251,54 +1309,6 @@ def get_args() -> argparse.Namespace:
     
     # YAML
     parser.add_argument("-y", "--yaml", type = str, default = None, help = "The path of a YAML configuration file.") #, which can be used in-place of command-line arguments. If nothing is passed for this, then command-line arguments will be used. If a YAML file is passed, then command-line arguments for properties that CAN be defined in YAML will be ignored (even if you did not define them in the YAML file).")
-    
-    # Which resources to create.
-    # parser.add_argument("--create-lfs-client-vm", dest = "create_lambda_fs_client_vm", action = "store_true", help = "If passed, then create the primary Client VM for λFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
-    # parser.add_argument("--create-hopsfs-client-vm", dest = "create_hops_fs_client_vm", action = "store_true", help = "If passed, then create the primary Client VM for HopsFS. Once created, this script should be executed from that VM to create the rest of the required AWS infrastructure.")
-    # parser.add_argument("--skip-hopsfs-infrastrucutre", dest = "skip_hopsfs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to Vanilla HopsFS.")
-    # parser.add_argument("--skip-lambda-fs-infrastrucutre", dest = "skip_lambda_fs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to λFS.")
-    # parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create the MySQL NDB Cluster.")
-    # parser.add_argument("--skip-zookeeper", dest = "skip_zookeeper_vm_creation", action = "store_true", help = "Do not create the λFS ZooKeeper nodes.")
-    # parser.add_argument("--skip-eks", dest = "skip_eks", action = "store_true", help = "Do not create AWS EKS Cluster. If you skip the creation of the AWS EKS cluster, you should pass the name of the existing AWS EKS cluster via the '--eks-cluster-name' command-line argument.")
-    # parser.add_argument("--skip-vpc", dest = "skip_vpc_creation", action = 'store_true', help = "If passed, then skip the VPC creation step. Note that skipping this step may require additional configuration. See the comments in the provided `wukong_setup_config.yaml` for further information.")
-    # parser.add_argument("--skip-eks-iam-role-creation", dest = "skip_iam_role_creation", action = 'store_true', help = "If passed, then skip the creation of the IAM role required by the AWS EKS cluster. You must pass the name of the IAM role via the '--eks-iam-role' argument if the role is not created with this script.")    
-    # parser.add_argument("--skip-auto-scaling-groups", dest = "skip_autoscaling_groups", action = "store_true", help = "If passed, then do not create the EC2 auto-scaling groups (for ).")
-    # parser.add_argument("--skip-launch-templates-groups", dest = "skip_launch_templates", action = "store_true", help = "If passed, then do not create the EC2 launch templates (for ).")
-    
-    # # Config.
-    # parser.add_argument("--no-color", dest = "no_color", action = 'store_true', help = "If passed, then no color will be used when printing messages to the terminal.")    
-    
-    # parser.add_argument("--ssh-keypair-name", dest = "ssh_keypair_name", type = str, default = None, help = "The name of the RSA SSH keypair registered with AWS. This MUST be specified when creating any EC2 VMs, as we must pass the name of the keypair to the EC2 API so that you will have SSH access to the virtual machines. There is no default value. Needs to be RSA. If you don't have an RSA key, then please create a new RSA key and add that to your AWS account.")
-    # parser.add_argument("--ssh-key-path", dest = "ssh_key_path", type = str, default = None, help = "Path to the RSA SSH key. Needs to be RSA format. If you don't have an RSA key, then please create a new RSA key and add that to your AWS account.")
-    
-    # # General AWS-related configuration.
-    # parser.add_argument("-p", "--aws-profile", dest = 'aws_profile', default = None, type = str, help = "The AWS credentials profile to use when creating the resources. If nothing is specified, then this script will ultimately use the default AWS credentials profile.")
-    # parser.add_argument("--aws-region", dest = "aws_region", type = str, default = "us-east-1", help = "The AWS region in which the AWS resources should be created/provisioned. Default: \"us-east-2\"")
-    # parser.add_argument("--ip", dest = "user_public_ip", default = "DEFAULT_VALUE", type = str, help = "Your public IP address. We'll create network security rules that will enable this IP address to connect to the EC2 VMs via SSH. If you do not specify this value, then we will attempt to resolve your IP address ourselves.")
-    
-    # # VPC.
-    # parser.add_argument("--vpc-name", dest = "vpc_name", type = str, default = "LambdaFS_VPC", help = "The name to use for your AWS Virtual Private Cloud (VPC). If you're skipping the VPC-creation step, then you need to specify the name of an existing VPC to use. Default: \"LambdaFS_VPC\"")
-    # parser.add_argument("--security-group-name", dest = "security_group_name", type = str, default = "lambda-fs-security-group", help = "The name to use for the Security Group. Default: \"lambda-fs-security-group\"")
-    # # parser.add_argument("--vpc-cidr-block", dest = "vpc_cidr_block", type = str, default = "10.0.0.0/16", help = "IPv4 CIDR block to use when creating the VPC. This should be left as the default value of \"10.0.0.0/16\" unless you know what you're doing. Default value: \"10.0.0.0/16\"")
-    
-    # # EC2 
-    # parser.add_argument("-lfs-c-ags-it", "--lfs-client-auto-scaling-group-instance-type", dest = "lfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the λFS client auto-scaling group. Default: \"r5.4xlarge\"")
-    # parser.add_argument("-hfs-c-ags-it","--hopsfs-client-auto-scaling-group-instance-type", dest = "hopsfs_client_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS client auto-scaling group. Default: \"r5.4xlarge\"")
-    # parser.add_argument("-hfs-nn-ags-it","--hopsfs-namenode-auto-scaling-group-instance-type", dest = "hopsfs_namenode_ags_it", type = str, default = "r5.4xlarge", help = "The EC2 instance type to use for the HopsFS NameNode auto-scaling group. Default: \"r5.4xlarge\"")
-    # parser.add_argument("--num-ndb-datanodes", dest = "num_ndb_datanodes", type = int, default = 4, help = "The number of MySQL NDB Data Nodes to create. Default: 4")
-    # parser.add_argument("--ndb-manager-node-instance-type", dest = "ndb_manager_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the MySQL NDB Manager Node. Default: \"r5.4xlarge\"")
-    # parser.add_argument("--ndb-data-node-instance-type", dest = "ndb_datanode_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the MySQL NDB Data Node(s). Default: \"r5.4xlarge\"")
-    # parser.add_argument("--lambdafs-zk-instance-type", dest = "lambdafs_zk_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the LambdaFS ZooKeeper node(s) instance type.")
-    # parser.add_argument("--lambdafs-client-vm-instance-type", dest = "lfs_client_vm_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the 'primary' λFS client VM, which also doubles as the experiment driver. Default: \"r5.4xlarge\"")
-    # parser.add_argument("--hopsfs-client-vm-instance-type", dest = "hopsfs_client_vm_instance_type", default = "r5.4xlarge", type = str, help = "Instance type to use for the 'primary' HopsFS client VM, which also doubles as the experiment driver. Default: \"r5.4xlarge\"")
-    # parser.add_argument("--num-lambdafs-zookeeper-vms", dest = "num_lambda_fs_zk_vms", default = 3, type = int, help = "The number of λFS ZooKeeper VMs to create. Default: 3")
-    
-    # # parser.add_argument("-start-zk", "--start-zoo-keeper", dest = "start_zoo_keeper", action = "store_true", help = "If passed, also start associated ZooKeeper on the VMs. Note that, if you simply opt to create the ZooKeeper VMs, the VMs will start running. But ZooKeeper itself won't be started unless you pass this argument.")
-    # # parser.add_argument("--start-ndb", dest = "start_ndb", action = "store_true", help = "If passed, also start NDB on the associated VMs. Note that, if you simply opt to create the NDB VMs, the VMs will start running. But NDB itself won't be started unless you pass this argument.")
-    
-    # # EKS.
-    # parser.add_argument("--eks-cluster-name", dest = "eks_cluster_name", type = str, default = "lambda-fs-eks-cluster", help = "The name to use for the AWS EKS cluster. We deploy the FaaS platform OpenWhisk on this EKS cluster. Default: \"lambda-fs-eks-cluster\"")
-    # parser.add_argument("--eks-iam-role-name", dest = "eks_iam_role_name", type = str, default = "lambda-fs-eks-cluster-role", help = "The name to either use when creating the new IAM role for the AWS EKS cluster, or this is the name of an existing role to use for the cluster (when you also pass the '--skip-eks-iam-role-creation' argument).")
     return parser.parse_args()
 
 def main():
@@ -1373,61 +1383,41 @@ def main():
             do_start_zookeeper_cluster = arguments.get("start_zookeeper_cluster", True)
             do_populate_zookeeper_cluster = arguments.get("populate_zookeeper_cluster", True)
             
+            do_create_ndb_cluster = arguments.get("create_ndb_cluster", True)
+            do_start_ndb_cluster = arguments.get("start_ndb_cluster", True)
+            
             skip_iam_role_creation = arguments.get("skip_iam_role_creation", False)
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
             skip_eks = arguments.get("skip_eks", False)
-            skip_ndb = arguments.get("skip_ndb", False)
             skip_zookeeper_vm_creation = arguments.get("skip_zookeeper_vm_creation", False)
             skip_launch_templates = arguments.get("skip_launch_templates", False)
             skip_autoscaling_groups = arguments.get("skip_autoscaling_groups", False)
             
             zookeeper_jvm_heap_size = arguments.get("zookeeper_jvm_heap_size", 4000)
             
+            infrastructure_json_path = arguments.get("infrastructure_json_path", None)
+            infrastructure_json = None 
+            if infrastructure_json_path is not None:
+                logger.info("Loading existing infrastructure information from JSON file at \"%s\" now." % infrastructure_json_path)
+                with open(infrastructure_json_path, "r") as infrastructure_json_file:
+                    infrastructure_json = json.load(infrastructure_json_file)
+                
+                log_success("Loaded existing infrastructure:")
+                logger.info(str(infrastructure_json))
+            
             # start_zookeeper = arguments.get("start_zoo_keeper", False)
             # start_ndb = arguments.get("start_ndb", False)
             
-            if ssh_key_path == None and (not skip_ndb or not skip_zookeeper_vm_creation or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
+            if ssh_key_path == None and (do_create_ndb_cluster or not skip_zookeeper_vm_creation or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
                 log_error("The SSH key path cannot be None.")
                 exit(1)
                 
-            if ssh_keypair_name == None and (not skip_ndb or not skip_zookeeper_vm_creation or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
+            if ssh_keypair_name == None and (do_create_ndb_cluster or not skip_zookeeper_vm_creation or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
                 log_error("The SSH keypair name cannot be None.")
                 exit(1)
     else:
         log_error("Please specify the path to the YAML configuration file.")
         exit(1) 
-        # NO_COLOR = command_line_args.no_color
-        # aws_profile_name = command_line_args.aws_profile
-        # aws_region = command_line_args.aws_region
-        # user_public_ip = command_line_args.user_public_ip
-        # vpc_name = command_line_args.vpc_name
-        # vpc_cidr_block = "10.0.0.0/16" # command_line_args.vpc_cidr_block
-        # security_group_name = command_line_args.security_group_name
-        # eks_cluster_name = command_line_args.eks_cluster_name 
-        # skip_iam_role_creation = command_line_args.skip_iam_role_creation
-        # eks_iam_role_name = command_line_args.eks_iam_role_name
-        # ssh_keypair_name = command_line_args.ssh_keypair_name
-        # num_ndb_datanodes = command_line_args.num_ndb_datanodes
-        # num_lambda_fs_zk_vms = command_line_args.num_lambda_fs_zk_vms
-        # ndb_manager_instance_type = command_line_args.ndb_manager_instance_type
-        # ndb_datanode_instance_type = command_line_args.ndb_datanode_instance_type
-        # lambdafs_zk_instance_type = command_line_args.lambdafs_zk_instance_type
-        # skip_vpc_creation = command_line_args.skip_vpc_creation
-        # skip_eks = command_line_args.skip_eks
-        # lfs_client_ags_it = command_line_args.lfs_client_ags_it
-        # hopsfs_client_ags_it = command_line_args.hopsfs_client_ags_it
-        # hopsfs_namenode_ags_it = command_line_args.hopsfs_namenode_ags_it
-        # lfs_client_vm_instance_type = command_line_args.lfs_client_vm_instance_type
-        # hopsfs_client_vm_instance_type = command_line_args.hopsfs_client_vm_instance_type
-        # skip_ndb = command_line_args.skip_ndb
-        # do_create_lambda_fs_client_vm = command_line_args.create_lambda_fs_client_vm
-        # do_create_hops_fs_client_vm = command_line_args.create_hops_fs_client_vm
-        # skip_launch_templates = command_line_args.skip_launch_templates
-        # skip_autoscaling_groups = command_line_args.skip_autoscaling_groups
-        # skip_zookeeper_vm_creation = command_line_args.skip_zookeeper_vm_creation
-        # ssh_key_path = command_line_args.ssh_key_path
-        # start_zookeeper = command_line_args.start_zookeeper
-        # start_ndb = command_line_args.start_ndb
     
     if user_public_ip == "DEFAULT_VALUE":
         log_warning("Attempting to resolve your IP address automatically...")
@@ -1504,7 +1494,6 @@ def main():
         log_error("Could not find SSH keypair named \"%s\" registered with AWS." % ssh_keypair_name)
         log_error("Please verify that the given keypair exists, is registered with AWS, and has no typos in its name.")
         exit(1)
-
 
     data["aws_region"] = aws_region 
     data["user_public_ip"] = user_public_ip
@@ -1730,9 +1719,11 @@ def main():
     data['public_subnet_ids'] = public_subnet_ids
     data['private_subnet_ids'] = private_subnet_ids
     
-    if not skip_ndb:
+    ndb_mgm_public_ip = None
+    data_node_public_ips = None 
+    if do_create_ndb_cluster:
         logger.info("Creating the MySQL NDB cluster nodes now.")
-        ndb_resp = create_ndb(
+        ndb_resp = create_ndb_cluster(
             ec2_resource = ec2_resource, 
             ec2_client = ec2_client,
             ssh_keypair_name = ssh_keypair_name, 
@@ -1747,7 +1738,33 @@ def main():
         
         data.update(ndb_resp)
         
-        create_ndb_mgm_config(ndb_mgm_ip = ndb_resp["manager-node-public-ip"], ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory, data_node_public_ips = ndb_resp["data-node-public-ips"])
+        ndb_mgm_public_ip = ndb_resp["manager-node-public-ip"]
+        data_node_public_ips = ndb_resp["data-node-public-ips"]
+        
+        create_ndb_config(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory, data_node_public_ips = data_node_public_ips)
+    
+    if do_start_ndb_cluster:
+        if ndb_mgm_public_ip == None:
+            if "manager-node-public-ip" not in infrastructure_json:
+                log_error("We did not just create the MySQL NDB cluster; however, the `infrastructure_json` data does not have an entry for the NDB manager node's public IP address.")
+                log_error("Consequently, we cannot start the NDB cluster as instructed.")
+                exit(1)
+            
+            logger.debug("Retrieving NDB manager node's IP from the `infrastructure_json` data.")
+            ndb_mgm_public_ip = infrastructure_json.get("manager-node-public-ip", None)
+        
+        if data_node_public_ips == None:
+            if "data-node-public-ips" not in infrastructure_json:
+                log_error("We did not just create the MySQL NDB cluster; however, the `infrastructure_json` data does not have an entry for the NDB data nodes' public IP address.")
+                log_error("Consequently, we cannot start the NDB cluster as instructed.")
+                exit(1)
+            
+            logger.debug("Retrieving NDB data nodes' IP from the `infrastructure_json` data.")
+            data_node_public_ips = infrastructure_json.get("data-node-public-ips", None)
+        
+        logger.info("Starting the MySQL NDB cluster now.")
+        start_ndb_cluster(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, data_node_ips = data_node_public_ips)
+        log_success("Successfully started the MySQL NDB cluster (hopefully).")
     
     zk_node_public_IPs = None
     if not skip_zookeeper_vm_creation:

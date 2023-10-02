@@ -1010,7 +1010,7 @@ def update_zookeeper_config(
         list of str: The public IP addresses of the newly-created ZooKeeper nodes.
     """
     
-    config = """ \
+    config = """\
 tickTime=1000
 dataDir=/data/zookeeper
 dataLogDir=/disk2/zookeeper/logs
@@ -1086,14 +1086,18 @@ def start_zookeeper_cluster(
     
     key = RSAKey(filename = ssh_key_path)
 
+    # Start each of the ZooKeeper nodes.
     for ip in ips:
         ssh_client = SSHClient()
         ssh_client.set_missing_host_key_policy(AutoAddPolicy)
         logger.info("Connecting to ZooKeeper VM at %s" % ip)
         ssh_client.connect(hostname = ip, port = 22, username = "ubuntu", pkey = key)
-        logger.info("Connected!")
+        logger.info("Connected! Starting ZooKeeper server now.")
         
-        ssh_client.exec_command("sudo /opt/zookeeper/bin/zkServer.sh start")
+        _, stdout, stderr = ssh_client.exec_command("sudo /opt/zookeeper/bin/zkServer.sh start")
+        
+        logger.info("STDOUT (ZooKeeper VM @ %s): %s" % (ip, stdout.read().decode()))
+        logger.info("STDERR (ZooKeeper VM @ %s): %s" % (ip, stderr.read().decode()))
         
         ssh_client.close()
         
@@ -1144,7 +1148,7 @@ def get_args() -> argparse.Namespace:
     # parser.add_argument("--skip-hopsfs-infrastrucutre", dest = "skip_hopsfs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to Vanilla HopsFS.")
     # parser.add_argument("--skip-lambda-fs-infrastrucutre", dest = "skip_lambda_fs_infrastrucutre", action = 'store_true', help = "Do not setup infrastrucutre specific to λFS.")
     # parser.add_argument("--skip-ndb", dest = "skip_ndb", action = "store_true", help = "Do not create the MySQL NDB Cluster.")
-    # parser.add_argument("--skip-zookeeper", dest = "skip_zookeeper", action = "store_true", help = "Do not create the λFS ZooKeeper nodes.")
+    # parser.add_argument("--skip-zookeeper", dest = "skip_zookeeper_vm_creation", action = "store_true", help = "Do not create the λFS ZooKeeper nodes.")
     # parser.add_argument("--skip-eks", dest = "skip_eks", action = "store_true", help = "Do not create AWS EKS Cluster. If you skip the creation of the AWS EKS cluster, you should pass the name of the existing AWS EKS cluster via the '--eks-cluster-name' command-line argument.")
     # parser.add_argument("--skip-vpc", dest = "skip_vpc_creation", action = 'store_true', help = "If passed, then skip the VPC creation step. Note that skipping this step may require additional configuration. See the comments in the provided `wukong_setup_config.yaml` for further information.")
     # parser.add_argument("--skip-eks-iam-role-creation", dest = "skip_iam_role_creation", action = 'store_true', help = "If passed, then skip the creation of the IAM role required by the AWS EKS cluster. You must pass the name of the IAM role via the '--eks-iam-role' argument if the role is not created with this script.")    
@@ -1242,12 +1246,14 @@ def main():
             
             do_create_lambda_fs_client_vm = arguments.get("create_lambda_fs_client_vm", True)
             do_create_hops_fs_client_vm = arguments.get("create_hops_fs_client_vm", True)
+            start_zookeeper_cluster = arguments.get("start_zookeeper_cluster", True)
+            populate_zookeeper_cluster = arguments.get("populate_zookeeper_cluster", True)
             
             skip_iam_role_creation = arguments.get("skip_iam_role_creation", False)
             skip_vpc_creation = arguments.get("skip_vpc_creation", False)
             skip_eks = arguments.get("skip_eks", False)
             skip_ndb = arguments.get("skip_ndb", False)
-            skip_zookeeper = arguments.get("skip_zookeeper", False)
+            skip_zookeeper_vm_creation = arguments.get("skip_zookeeper_vm_creation", False)
             skip_launch_templates = arguments.get("skip_launch_templates", False)
             skip_autoscaling_groups = arguments.get("skip_autoscaling_groups", False)
             
@@ -1256,11 +1262,11 @@ def main():
             # start_zookeeper = arguments.get("start_zoo_keeper", False)
             # start_ndb = arguments.get("start_ndb", False)
             
-            if ssh_key_path == None and (not skip_ndb or not skip_zookeeper or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
+            if ssh_key_path == None and (not skip_ndb or not skip_zookeeper_vm_creation or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
                 log_error("The SSH key path cannot be None.")
                 exit(1)
                 
-            if ssh_keypair_name == None and (not skip_ndb or not skip_zookeeper or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
+            if ssh_keypair_name == None and (not skip_ndb or not skip_zookeeper_vm_creation or do_create_lambda_fs_client_vm or do_create_hops_fs_client_vm):
                 log_error("The SSH keypair name cannot be None.")
                 exit(1)
     else:
@@ -1294,7 +1300,7 @@ def main():
         # do_create_hops_fs_client_vm = command_line_args.create_hops_fs_client_vm
         # skip_launch_templates = command_line_args.skip_launch_templates
         # skip_autoscaling_groups = command_line_args.skip_autoscaling_groups
-        # skip_zookeeper = command_line_args.skip_zookeeper
+        # skip_zookeeper_vm_creation = command_line_args.skip_zookeeper_vm_creation
         # ssh_key_path = command_line_args.ssh_key_path
         # start_zookeeper = command_line_args.start_zookeeper
         # start_ndb = command_line_args.start_ndb
@@ -1616,7 +1622,8 @@ def main():
         
         data.update(ndb_resp)
     
-    if not skip_zookeeper:
+    zk_node_public_IPs = None
+    if not skip_zookeeper_vm_creation:
         logger.info("Creating the λFS ZooKeeper nodes now.")
         zk_node_IDs = create_lambda_fs_zookeeper_vms(
             ec2_resource = ec2_resource, 
@@ -1635,16 +1642,39 @@ def main():
         
         logger.info("Updating ZooKeeper configuration now.")
         zk_node_public_IPs = update_zookeeper_config(ec2_client = ec2_client, instance_ids = zk_node_IDs, ssh_key_path = ssh_key_path, zookeeper_jvm_heap_size = zookeeper_jvm_heap_size, data = data)
+    
+    if start_zookeeper_cluster:
+        logger.info("Starting ZooKeeper cluster now.")
         
-        logger.info("Starting ZooKeeper now.")
-        start_zookeeper_cluster(ips = zk_node_public_IPs, ssh_key_path = ssh_key_path)
+        # These will be done if we didn't create the VMs during the execution of this script, in which case we expect the user to pass them in.
+        if zk_node_public_IPs == None:
+            zk_node_public_IPs = arguments.get("zk_node_public_IPs", [])
+            
+            # Log an error if we couldn't find any IPs.
+            if len(zk_node_public_IPs) == 0:
+                log_error("No ZooKeeper VM IPs. Cannot start ZooKeeper.")
         
-        log_success("Successfully started the ZooKeeper cluster. Sleeping for a few seconds, then populating ZK cluster.")
-        for _ in tqdm(range(21)):
-            sleep(0.25)
+        # Only start the cluster if the number of IPs is greater than 0.
+        if len(zk_node_public_IPs) > 0:
+            start_zookeeper_cluster(ips = zk_node_public_IPs, ssh_key_path = ssh_key_path)
+            
+            log_success("Successfully started the ZooKeeper cluster. Sleeping for a few seconds, then populating ZK cluster.")
+            for _ in tqdm(range(21)):
+                sleep(0.25)
         
-        logger.info("Populating ZooKeeper cluster now.")
-        populate_zookeeper(ips = zk_node_public_IPs, ssh_key_path = ssh_key_path)
+    if populate_zookeeper_cluster:
+        # These will be done if we didn't create the VMs AND didn't start the VMs during the execution of this script, in which case we expect the user to pass them in.
+        if zk_node_public_IPs == None:
+            zk_node_public_IPs = arguments.get("zk_node_public_IPs", [])
+            
+            # Log an error if we couldn't find any IPs.
+            if len(zk_node_public_IPs) == 0:
+                log_error("No ZooKeeper VM IPs. Cannot start ZooKeeper.")
+        
+        # Only populate the cluster if the number of IPs is greater than 0.
+        if len(zk_node_public_IPs) > 0:
+            logger.info("Populating ZooKeeper cluster now.")
+            populate_zookeeper(ips = zk_node_public_IPs, ssh_key_path = ssh_key_path)
     
     if do_create_lambda_fs_client_vm:
         logger.info("Creating λFS client virtual machine.")

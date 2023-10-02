@@ -27,9 +27,9 @@ and to replicate the experiments conducted in the paper, "".
 This script should be executed from 
 """
 
-MYSQL_NDB_MANAGER_AMI = "ami-0a0e055a66e58df2c"
-MYSQL_NDB_DATANODE1_AMI = "ami-075e47140b5fd017a"
-MYSQL_NDB_DATANODE2_AMI = "ami-0fdbf79b2ec52386e"
+MYSQL_NDB_MANAGER_AMI = "ami-087b84fd7823f5eff" # "ami-0a0e055a66e58df2c"
+MYSQL_NDB_DATANODE1_AMI = "ami-03c289589fa18edc3" # "ami-075e47140b5fd017a"
+MYSQL_NDB_DATANODE2_AMI = "ami-0645e88cb1e2bb959" # "ami-0fdbf79b2ec52386e"
 HOPSFS_CLIENT_AMI = "ami-01d2cba66e4fe4e1e"
 HOPSFS_NAMENODE_AMI = "ami-0cc88cd1a5dfaef18"
 LAMBDA_FS_CLIENT_AMI = "ami-027b04d5fece878a8"
@@ -455,6 +455,7 @@ def create_lambda_fs_client_vm(
 
 def create_ndb(
     ec2_resource = None,
+    ec2_client = None,
     ssh_keypair_name:str = None,
     num_datanodes:int = 4,
     subnet_id:str = None,
@@ -524,7 +525,6 @@ def create_ndb(
     type1_datanodes = []
     type2_datanodes = []
     datanode_ids = [] 
-    datanode_public_ips = []
     datnaode_private_ips = []
     
     logger.info("Creating %d Type 1 MySQL NDB Data Node(s)." % num_type_1_datanodes)
@@ -560,7 +560,6 @@ def create_ndb(
         ) # end of call to ec2_client.create_instances()
         type1_datanodes.append(type1_datanode[0].id)
         datanode_ids.append(type1_datanode[0].id)
-        datanode_public_ips.append(type1_datanode[0].public_ip_address)
         datnaode_private_ips.append(type1_datanode[0].private_ip_address)
     
     logger.info("Creating %d Type 2 MySQL NDB Data Node(s)." % num_type_2_datanodes)
@@ -594,14 +593,41 @@ def create_ndb(
         ) # end of call to ec2_client.create_instances()
         type2_datanodes.append(type2_datanode[0].id)
         datanode_ids.append(type2_datanode[0].id)
-        datanode_public_ips.append(type2_datanode[0].public_ip_address)
         datnaode_private_ips.append(type2_datanode[0].private_ip_address)
     
     logger.info("Created NDB EC2 instances.")
     logger.info("Created 1 NDB Manager Node and %d NDB DataNode(s)." % len(datanode_ids))
+    logger.info("Sleeping for 30 seconds while the NDB VMs start-up.")
+    for i in tqdm(range(120)):
+        sleep(0.25)
+    
+    # Resolving this separately/explicitly, as it kept being None when I tried to access the field, even after waiting.
+    ndb_mgm_public_ip = ndb_manager_instance[0].public_ip_address
+    if ndb_mgm_public_ip == None:
+        ndb_mgm_desc_resp = ec2_client.describe_instances(InstanceIds = [ndb_manager_instance[0].id])
+        ndb_mgm_public_ip = ndb_mgm_desc_resp['Reservations'][0]['Instances'][0]['PublicIpAddress']
+        
+        if ndb_mgm_public_ip == None:
+            log_error("Cannot resolve MySQL Cluster NDB manager node public IPv4.")
+            log_error("Terminating NDB manager node.")
+            ec2_client.terminate_instances(InstanceIds = [ndb_manager_instance[0].id])
+            log_error("Terminating the %d NDB data node(s)." % len(datanode_ids))
+            ec2_client.terminate_instances(InstanceIds = datanode_ids)
+            
+            exit(1)
+        
+        logger.debug("IPv4 of NDB manager node: %s" % ndb_mgm_public_ip)
+    
+    datanode_public_ips = []
+    ndb_dn_resp = ec2_client.describe_instances(InstanceIds = datanode_ids)
+    for i,reservation in enumerate(ndb_dn_resp["Reservations"]):
+        dn_public_ip = reservation['Instances'][0]['PublicIpAddress']
+        datanode_public_ips.append(dn_public_ip)
+        logger.debug("IPv4 of NDB data node #%d: %s" % (i, dn_public_ip))
+    
     return {
         "manager-node-id": ndb_manager_instance[0].id,
-        "manager-node-public-ip": ndb_manager_instance[0].public_ip_address,
+        "manager-node-public-ip": ndb_mgm_public_ip,
         "manager-node-private-ip": ndb_manager_instance[0].private_ip_address,
         "data-node-ids": datanode_ids,
         "data-node-public-ips": datanode_public_ips,
@@ -1184,7 +1210,38 @@ def create_ndb_mgm_config(
     for _ in range(0, num_api_nodes):
         mgm_config_file.write("[api]\n")
     
+    mgm_config_file.close() 
+    
+    # Create the /etc/my.cnf configuration file for the manager node.
+    my_cnf_mgm_file = sftp_client.open("/etc/my.cnf", mode = "w")
+    my_cnf_mgm_file.write("[mysqld]\n")
+    my_cnf_mgm_file.write("# Options for mysqld process:\n")
+    my_cnf_mgm_file.write("ndbcluster                      # run NDB storage engine\n")
+    my_cnf_mgm_file.write("\n")
+    my_cnf_mgm_file.write("[mysql_cluster]\n")
+    my_cnf_mgm_file.write("# Options for NDB Cluster processes:\n")
+    my_cnf_mgm_file.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_ip)
+    my_cnf_mgm_file.close() 
+    
     ssh_client.close()
+    
+    # TODO: The /etc/my.cnf configuration file for the data nodes.
+    for dn_public_ip in data_node_public_ips:
+        ssh_client = SSHClient()
+        ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+        logger.info("Connecting to MySQL NDB data node VM at %s" % dn_public_ip)
+        ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
+        sftp_client = ssh_client.open_sftp()
+        
+        my_cnf_dn_file = sftp_client.open("/etc/my.cnf", mode = "w")
+        my_cnf_dn_file.write("[mysqld]\n")
+        my_cnf_dn_file.write("# Options for mysqld process:\n")
+        my_cnf_dn_file.write("ndbcluster                      # run NDB storage engine\n")
+        my_cnf_dn_file.write("\n")
+        my_cnf_dn_file.write("[mysql_cluster]\n")
+        my_cnf_dn_file.write("# Options for NDB Cluster processes:\n")
+        my_cnf_dn_file.write("ndb-connectstring=%s  # location of management server\n" % ndb_mgm_ip)
+        my_cnf_dn_file.close() 
     
 def get_args() -> argparse.Namespace:
     """
@@ -1677,6 +1734,7 @@ def main():
         logger.info("Creating the MySQL NDB cluster nodes now.")
         ndb_resp = create_ndb(
             ec2_resource = ec2_resource, 
+            ec2_client = ec2_client,
             ssh_keypair_name = ssh_keypair_name, 
             num_datanodes = num_ndb_datanodes, 
             security_group_ids = security_group_ids,
@@ -1689,7 +1747,7 @@ def main():
         
         data.update(ndb_resp)
         
-        create_ndb_mgm_config(target_server_ip = ndb_resp["manager-node-public-ip"], ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory)
+        create_ndb_mgm_config(ndb_mgm_ip = ndb_resp["manager-node-public-ip"], ssh_key_path = ssh_key_path, ndb_datanode_data_directory = ndb_datanode_data_directory, ndb_mgm_data_directory = ndb_mgm_data_directory, data_node_public_ips = ndb_resp["data-node-public-ips"])
     
     zk_node_public_IPs = None
     if not skip_zookeeper_vm_creation:

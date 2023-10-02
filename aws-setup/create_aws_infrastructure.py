@@ -1271,6 +1271,7 @@ def start_ndb_cluster(
     ndb_mgm_ip:str = None,
     data_node_ips:list[str] = None,
     ssh_key_path:str = None,
+    start_manager_node:bool = True,
     #first_start:bool = False # If True, then we start the Cluster as if it is a brand new cluster.
 ):
     """
@@ -1290,28 +1291,55 @@ def start_ndb_cluster(
     
     key = RSAKey(filename = ssh_key_path)
 
-    ssh_client = SSHClient()
-    ssh_client.set_missing_host_key_policy(AutoAddPolicy)
-    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_ip)
-    ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
-    logger.info("Connected! Starting manager now.")
+    if start_manager_node:
+        ssh_client = SSHClient()
+        ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+        logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_ip)
+        ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
+        logger.info("Connected! Starting manager now.")
     
-    _, stdout, stderr = ssh_client.exec_command("sudo /usr/local/bin/ndb_mgmd --skip-config-cache -f /var/lib/mysql-cluster/config.ini")
+        _, stdout, stderr = ssh_client.exec_command("sudo -S /usr/local/bin/ndb_mgmd --skip-config-cache -f /var/lib/mysql-cluster/config.ini")    
+        logger.info(stdout.read().decode())
+        logger.info(stderr.read().decode())
         
-    logger.info(stdout.read().decode())
-    logger.info(stderr.read().decode())
+        logger.info("Started manager (hopefully).")
+        logger.info("Restarting mysql service. (This may take a minute or two.)")
+        st = time.time() 
+        
+        _, stdout, stderr = ssh_client.exec_command("sudo -S service mysql restart")    
+        logger.info(stdout.read().decode())
+        logger.info(stderr.read().decode())
+        
+        logger.info("Restarted MySQL service. Time elapsed: %.2f seconds." % (time.time() - st))
     
-    ssh_client.close()
+        ssh_client.close()
     
-    logger.info("Started manager (hopefully). Next, starting data nodes.")
+    print()
+    logger.info("Starting data nodes.")
     
     for i in tqdm(range(len(data_node_ips))):
         data_node_ip = data_node_ips[i]
-        subprocess.call(["start_ndb_datanode.sh", data_node_ip, ssh_key_path], cwd = "ndb_configs/")
+        
+        ssh_client = SSHClient()
+        ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+        logger.info("Connecting to MySQL NDB Data Node VM at %s" % data_node_ip)
+        ssh_client.connect(hostname = data_node_ip, port = 22, username = "ubuntu", pkey = key)
+        logger.info("Connected! Starting data node now.")
+
+        _, stdout, stderr = ssh_client.exec_command("sudo -S /usr/local/bin/ndbmtd --initial")    
+        logger.info(stdout.read().decode())
+        logger.info(stderr.read().decode())
+
+        ssh_client.close()
+
+        logger.info("Started data node (hopefully).")
+        
+        # subprocess.call(["start_ndb_datanode.sh", data_node_ip, ssh_key_path])
 
 def populate_mysql_ndb_tables(
     ndb_mgm_ip:str = None,
     ssh_key_path:str = None,
+    create_user:bool = True,
 ):
     """
     Populate the MySQL Cluster NDB tables.
@@ -1324,7 +1352,72 @@ def populate_mysql_ndb_tables(
         log_error("SSH key path cannot be None.")
         return 
     
-    subprocess.call(["populate_mysql_tables.sh", ndb_mgm_ip, ssh_key_path], cwd = "ndb_configs/")
+    key = RSAKey(filename = ssh_key_path)
+
+    ssh_client = SSHClient()
+    ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_ip)
+    ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
+    logger.info("Connected to manager node.")
+    
+    if create_user:
+        # Create MySQL user.
+        logger.info("Creating MySQL user \"user\"")
+        
+        _, stdout, stderr = ssh_client.exec_command("cd /home/ubuntu/mysql_scripts; sudo -S /usr/local/mysql/bin/mysql --host=localhost --port=22 vanilla_hopsfs < create_user.sql")  
+        
+        logger.info(stdout.read().decode())
+        stderr_output = stderr.read().decode()
+        
+        if len(stderr_output.strip()) > 0:
+            log_error(stderr_output)
+            
+            if "ERROR" in stderr_output:
+                return 
+        
+        log_success("Created MySQL user \"user\"")
+    
+    logger.debug("Executing MySQL script: \"schema.sql\"")
+    
+    mysql_scripts = [
+        "schema.sql",
+        "update-schema_2.8.2.1_to_2.8.2.2.sql",
+        "update-schema_2.8.2.2_to_2.8.2.3.sql",
+        "update-schema_2.8.2.3_to_2.8.2.4.sql",
+        "update-schema_2.8.2.4_to_2.8.2.5.sql",
+        "update-schema_2.8.2.5_to_2.8.2.6.sql",
+        "update-schema_2.8.2.6_to_2.8.2.7.sql",
+        "update-schema_2.8.2.7_to_2.8.2.8.sql",
+        "update-schema_2.8.2.8_to_2.8.2.9.sql",
+        "update-schema_2.8.2.9_to_2.8.2.10.sql",
+        "update-schema_2.8.2.10_to_3.2.0.0.sql",
+        "serverless.sql",
+    ]
+    
+    logger.info("Executing %d MySQL scripts now." % len(mysql_scripts))
+    
+    for mysql_script in mysql_scripts:
+        logger.debug("Executing MySQL script: \"%s\"" % mysql_script)
+    
+        # Execute MySQL commands to populate tables/database.
+        _, stdout, stderr = ssh_client.exec_command("cd /home/ubuntu/mysql_scripts; sudo /usr/local/mysql/bin/mysql --host=localhost --port=22 -u user -p123password123 vanilla_hopsfs < %s" % mysql_script)  
+        logger.info(stdout.read().decode())
+
+        stderr_output = stderr.read().decode()
+        
+        if len(stderr_output.strip()) > 0:
+            log_error(stderr_output)
+            
+            if "ERROR" in stderr_output.upper() or "EXCEPTION" in stderr_output.upper():
+                log_error("Exiting.")
+                return 
+        
+    log_success("Executed %d MySQL scripts." % len(mysql_scripts))
+    
+    ssh_client.close()
+    
+    # subprocess.call(["create_mysql_user.sh", ndb_mgm_ip, ssh_key_path])
+    # subprocess.call(["populate_mysql_tables.sh", ndb_mgm_ip, ssh_key_path])
 
 def get_args() -> argparse.Namespace:
     """
@@ -1338,6 +1431,9 @@ def get_args() -> argparse.Namespace:
 
 def main():
     global NO_COLOR
+    
+    current_datetime = str(datetime.now())
+    current_datetime = current_datetime.replace(":", "_")
     
     command_line_args = get_args() 
     
@@ -1637,7 +1733,10 @@ def main():
         data["vpc_id"] = vpc_id
             
     log_success("Resolved VPC ID of VPC \"%s\" as %s" % (vpc_name, vpc_id))
-        
+    
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+      
     if not skip_eks:
         create_eks_openwhisk_cluster(
             aws_profile_name = aws_profile_name, 
@@ -1649,6 +1748,9 @@ def main():
             create_eks_iam_role = not skip_iam_role_creation,
             eks_iam_role_name = eks_iam_role_name,
         )
+    
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
     
     logger.info("Creating EC2 launch templates and instance groups now.")
     
@@ -1676,6 +1778,9 @@ def main():
         skip_autoscaling_groups = skip_autoscaling_groups,
         data = data
     )
+    
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
     
     # Get the subnet ID(s).
     resp_subnet_ids = ec2_client.describe_subnets(
@@ -1785,6 +1890,9 @@ def main():
             log_error("Terminating the %d NDB data node(s)." % len(datanode_ids))
             ec2_client.terminate_instances(InstanceIds = datanode_ids)
             raise ex 
+   
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
     
     if do_start_ndb_cluster:
         if ndb_mgm_public_ip == None:
@@ -1811,7 +1919,11 @@ def main():
         logger.info("Starting the MySQL NDB cluster now.")
         start_ndb_cluster(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, data_node_ips = data_node_public_ips)
         log_success("Successfully started the MySQL NDB cluster (hopefully).")
-    
+        
+        logger.info("Sleeping for 30 seconds to give the NDB cluster a chance to start-up.")
+        for _ in tqdm(range(121)):
+            sleep(0.25)
+
     if do_populate_mysql_ndb_tables:
         if ndb_mgm_public_ip == None:
             if "manager-node-public-ip" not in infrastructure_json:
@@ -1827,6 +1939,9 @@ def main():
         logger.info("Populating the MySQL NDB database now.")
         populate_mysql_ndb_tables(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path)
         log_success("Successfully populated the MySQL NDB cluster (hopefully).")
+    
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
     
     zk_node_public_IPs = None
     if not skip_zookeeper_vm_creation:
@@ -1848,6 +1963,9 @@ def main():
         
         logger.info("Updating ZooKeeper configuration now.")
         zk_node_public_IPs = update_zookeeper_config(ec2_client = ec2_client, instance_ids = zk_node_IDs, ssh_key_path = ssh_key_path, zookeeper_jvm_heap_size = zookeeper_jvm_heap_size, data = data)
+    
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
     
     if do_start_zookeeper_cluster:
         logger.info("Starting ZooKeeper cluster now.")
@@ -1889,6 +2007,9 @@ def main():
         
         data["lambda_fs_primary_client_vm_id"] = lambda_fs_primary_client_vm_id
         
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+        
     if do_create_hops_fs_client_vm:
         logger.info("Creating HopsFS client virtual machine.")
         hops_fs_primary_client_vm_id = create_hops_fs_client_vm(ec2_resource = ec2_resource, ssh_keypair_name = ssh_keypair_name, instance_type = hopsfs_client_vm_instance_type, subnet_id = public_subnet_ids[0], security_group_ids = security_group_ids)
@@ -1896,16 +2017,13 @@ def main():
         
         data["hops_fs_primary_client_vm_id"] = hops_fs_primary_client_vm_id
     
-    current_datetime = str(datetime.now())
-    current_datetime = current_datetime.replace(":", "_")
+    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
     
     logger.info("Newly created AWS infrastrucutre:")
     for k,v in data.items():
         logger.info("%s: %s" % (k, str(v)))
     
-    with open("./infrastructure_ids_%s_compat.json" % current_datetime, "w") as f:
-        json.dump(data, f)
-
     with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 

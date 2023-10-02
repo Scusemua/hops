@@ -24,3 +24,5 @@ dev-support/output/
 
 aws-setup/config.yaml
 aws-setup/*.json
+
+aws-setup/test_start_datanode.py

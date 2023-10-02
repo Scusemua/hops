@@ -55,6 +55,8 @@ zookeeper_jvm_heap_size: 4000
 create_ndb_cluster: True
 # If True, start the MySQL NDB Cluster VMs (manager node and data nodes).
 start_ndb_cluster: True 
+# If True, then populate the MySQL Cluster NDB database with HopsFS/LambdaFS tables.
+populate_ndb_tables: True 
 
 # If True, do NOT create the IAM role used by the AWS EKS cluster.
 skip_iam_role_creation: False

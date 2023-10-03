@@ -14,6 +14,10 @@ We tested these scripts on Windows 10 version 22H2 (OS Build 19045.3448) with Py
 
 The `aws-setup/requirements.txt` includes a list of all required Python modules as used by the `create_aws_infrastructure.py` script. The version numbers explicitly listed in the `requirements.txt` file are the versions we had installed when creating and using the script. If you have more recent versions of any of the modules and the script does not work, then please try downgrading to the version numbers explicitly listed in the `requirements.txt` file. 
 
+You must install and configure the `AWS CLI`. Please refer to the [general AWS CLI documentation](https://aws.amazon.com/cli/), [installation instructions](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), and [credentials configuration instructions](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html) for this step.
+
+You must install and configure `kubectl`, the Kubernetes command-line tool, which allows you to run commands against Kubernetes clusters. Please refer to the [official Kubernetes documentation](https://kubernetes.io/docs/tasks/tools/) for this step.
+
 ## Required Manual Configuration
 
 The default values for most parameters will be sufficient. There are a few that must be specified explicitly. These include:
@@ -102,3 +106,76 @@ AWS provides its own documentation for installing the Amazon EBS CSI driver onto
 
 The Amazon EBS CSI plugin requires IAM permissions to make calls to AWS APIs on your behalf. In order to perform this part of the installation process, you must have an existing AWS EKS cluster and an existing AWS Identity and Access Management (IAM) OpenID Connect (OIDC) provider for your cluster. If you are unsure as to whether or not you have one -- or if you know that you need to create one -- please see the following resource: ["creating an IAM OIDC provider for your cluster"](https://docs.aws.amazon.com/eks/latest/userguide/enable-iam-roles-for-service-accounts.html).
 
+**IMPORTANT:** Once you've installed the Amazon EBS CSI driver, there is an additional step that you should perform. Specifically, you should annotate the associated Kubernetes service account with the ARN of the EKS cluster IAM role. (This role was either created automatically via the `create_aws_infrastructure.py` script, or you created it while creating the AWS EKS cluster.)
+
+To annotate the service account, please execute the following command, making sure to replace `111122223333` with your [account ID](https://docs.aws.amazon.com/accounts/latest/reference/manage-acct-identifiers.html) and `AmazonEKS_EBS_CSI_DriverRole` with the name of the IAM role:
+
+```
+kubectl annotate serviceaccount ebs-csi-controller-sa \
+    -n kube-system \
+    eks.amazonaws.com/role-arn=arn:aws:iam::111122223333:role/AmazonEKS_EBS_CSI_DriverRole
+```
+
+Also, if you find you are still having errors, then you may need to modify the `EKS Cluster IAM role` such that it has the `sts:AssumeRoleWithWebIdentity` action specified in its trust policy/trust relationship. However, this itself may cause issues/errors (apparently?), so you should only add the `sts:AssumeRoleWithWebIdentity` action if you have reason to think you need to. (For example, you attempt to deploy the sample app used to determine if the EBS CSI driver is working. Upon describing the Kubernetes pod created by the app, you see errors stating that it is not authorized to perform some action and explicitly mentions `sts:AssumeRoleWithWebIdentity`.)
+
+### **OpenWhisk NGINX Secret** 
+
+You may encounter an error when deploying OpenWhisk (which we've not yet gone over in these instructions) concerning OpenWhisk's `gencerts` pod. This pod attempts to either use an existing "secret" called `<openwhisk-deployment-name>-nginx` or create a new one if no secret with that name exists. The creation process can sometimes fail with an error like the following (`testdev` is the name given to the OpenWhisk deployment):
+
+```
+Error from server (NotFound): secrets "testdev-nginx" not found
+generating new testdev-nginx secret
+generating server certificate request
+Can't load /root/.rnd into RNG
+139693137723840:error:2406F079:random number generator:RAND_load_file:Cannot open file:../crypto/rand/randfile.c:88:Filename=/root/.rnd
+problems making Certificate Request
+139693137723840:error:0D07A097:asn1 encoding routines:ASN1_mbstring_ncopy:string too long:../crypto/asn1/a_mbstr.c:107:maxsize=64
+```
+
+To avoid this, you can simply pre-create the `<openwhisk-deployment-name>-nginx` secret *before* attempting to deploy OpenWhisk. This process is performed automatically by the `configure_eks_cluster.sh` script; however, if you are setting up the AWS EKS cluster manually, then you will (likely) need to perform this step yourself. If you elect to skip this step and deploy OpenWhisk without pre-creating the secret, and you ultimately encounter the error, then simply perform `helm uninstall <deployment-name>` to uninstall OpenWhisk from your Kubernetes cluster. Then, follow the steps here before trying again to deploy OpenWhisk. 
+
+#### **Creating NGINX Secret**
+
+Generate the certificate and key (replace `KEY` and `CERT` with whatever you want the generated files to be named):
+
+```
+openssl req -x509 -newkey rsa:4096 -keyout KEY.pem -out CERT.pem -sha256 -days 365 -nodes
+```
+
+Next, create the `secret`. The secret must be named `"<OpenWhisk-deployment-name>-nginx"`. The name of the OpenWhisk deployment is whatever you specify to `helm` when deploying the OpenWhisk chart via `helm install <deployment_name> values.yaml .` (as described later in the documentation). Once again, replace `KEY` and `CERT` with whatever you specified when generating the files:
+
+```
+kubectl create secret tls OPENWHISK_DEPLOYMENT_NAME-nginx --cert=CERT.pem --key=KEY.pem
+```
+
+If you named your OpenWhisk deployment `owdev`, then the command would be:
+
+```
+kubectl create secret tls owdev-nginx --cert=CERT.pem --key=KEY.pem
+```
+
+## Common Issues & Errors
+
+In this section, we describe some commonly-encountered problems (and their solutions) when creating the AWS EKS cluster and deploying OpenWhisk onto it. 
+
+### **ERROR: "Your current IAM principal doesn’t have access to Kubernetes objects on this cluster."**
+
+You may see this error message displayed at the top of the AWS Web Console when viewing your AWS EKS cluster. In order to resolve this error, please follow the instructions outlined in the [Amazon EKS "View Kubernetes resources" documentation](https://docs.aws.amazon.com/eks/latest/userguide/view-kubernetes-resources.html#view-kubernetes-resources-permissions). 
+
+This documentation mentions ensuring that the proper permissions are assigned "to the IAM principal that you're using." 
+
+### **Failure to Generate NGINX Secret When Deploying OpenWhisk**
+
+You may encounter an error when deploying OpenWhisk (which we've not yet gone over in these instructions) concerning OpenWhisk's `gencerts` pod. This pod attempts to either use an existing "secret" called `<openwhisk-deployment-name>-nginx` or create a new one if no secret with that name exists. The creation process can sometimes fail with an error like the following (`testdev` is the name given to the OpenWhisk deployment):
+
+```
+Error from server (NotFound): secrets "testdev-nginx" not found
+generating new testdev-nginx secret
+generating server certificate request
+Can't load /root/.rnd into RNG
+139693137723840:error:2406F079:random number generator:RAND_load_file:Cannot open file:../crypto/rand/randfile.c:88:Filename=/root/.rnd
+problems making Certificate Request
+139693137723840:error:0D07A097:asn1 encoding routines:ASN1_mbstring_ncopy:string too long:../crypto/asn1/a_mbstr.c:107:maxsize=64
+```
+
+The steps to avoid/resolve this error are described above in the "**OpenWhisk NGINX Secret**" section.

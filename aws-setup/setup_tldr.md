@@ -161,4 +161,10 @@ You may monitor the progress of the OpenWhisk deployment by inspecting the vario
 kubectl get pods 
 ```
 
-Once OpenWhisk is up-and-running, you are almost done setting everything up!
+## Step 7: Create NameNode Deployments
+
+Execute the following command to automatically register 20 NameNode deployments with OpenWhisk:
+
+```
+python3 /home/ubuntu/repos/hops/dev-support/whisk/whisk_helper_gcp.py -n 20 --create --memory 20000 --concurrency 4
+```

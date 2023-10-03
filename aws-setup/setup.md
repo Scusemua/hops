@@ -326,3 +326,17 @@ kubectl get pods
 ```
 
 Once OpenWhisk is up-and-running, you are almost done setting everything up!
+
+### **Creating the Serverless NameNode Deployments**
+
+Next, you must register a number of unique serverless NameNode deployments with OpenWhisk. There is a script that helps to automate this process available in at `whisk_helper_gcp.py`. Although this script is labeled "gcp", it will work for an AWS-based deployment of OpenWhisk just as well. In our evaluation of $\lambda$FS, we used 20 NameNode deployments. In order to create 20 NameNode deployments using the provided script, execute the following command:
+
+```
+python3 /home/ubuntu/repos/hops/dev-support/whisk/whisk_helper_gcp.py -n 20 --create --memory 20000 --concurrency 4
+```
+
+The `-n` flag specifies how many deployments to create. The `--create` flag indicates that these are *new* deployments, and we're not simply updating the settings of existing deployments. (If you ever want to apply changes to existing deployments, pass the `--update` flag instead.) The `--memory` flag tells OpenWhisk how much memory Docker should allocate to the JVM runtimes. Finally, the `--concurrency` flag tells OpenWhisk how many invocations each NameNode can process simultaneously. For additional details concerning the `whisk_helper_gcp.py` script and its arguments, execute the following:
+
+```
+python3 /home/ubuntu/repos/hops/dev-support/whisk/whisk_helper_gcp.py --help
+```

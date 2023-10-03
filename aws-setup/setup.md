@@ -23,7 +23,7 @@ You must install and configure `kubectl`, the Kubernetes command-line tool, whic
 The default values for most parameters will be sufficient. There are a few that must be specified explicitly. These include:
 - `ssh_keypair_name`: In order to be able to connect to the various virtual machines used by $\lambda$FS and HopsFS, you will need to create and register an *EC2 key pair* with AWS. (If you have already done so, then you may reuse an existing key pair, provided the key is an RSA key.) [See this documentation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html) from AWS concerning "Amazon EC2 key pairs and Linux instances" for additional details. 
 - `ssh_key_path`: This is a path to the private key of the EC2 key pair specified in the `ssh_keypair_name` parameter. **This must be an RSA key.**
-- `aws_profile` (possibly): Depending on how you've configured the AWS credentials on your computer, you may be able to simply use the default AWS credentials profile. If you've not configured any AWS credentials on your computer, then this can be done by installing the [AWS CLI](https://aws.amazon.com/cli/). See [this AWS documentation](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) concerning "configuration and credential file settings" for more details.
+- `aws_profile` (*possibly*): Depending on how you've configured the AWS credentials on your computer, you may be able to simply use the default AWS credentials profile. If you've not configured any AWS credentials on your computer, then this can be done by installing the [AWS CLI](https://aws.amazon.com/cli/). See [this AWS documentation](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) concerning "configuration and credential file settings" for more details.
 
 Copying the `sample_config.yaml` file to a `config.yaml` file and using the default values for all other configurations parameters (aside from the parameters explicitly listed above) should be sufficient for creating all of the necessary components.
 
@@ -231,3 +231,98 @@ problems making Certificate Request
 ```
 
 The steps to avoid/resolve this error are described above in the "**OpenWhisk NGINX Secret**" section.
+
+# OpenWhisk
+
+Once you've created and configured your AWS EKS Cluster, you can deploy OpenWhisk.
+
+To do this, we recommend creating the $\lambda$FS "primary" client and experimental driver virtual machine using the `create_aws_infrastructure.py` script. Alternatively, you can create and deploy an EC2 VM yourself using the AMI `ami-01d2cba66e4fe4e1e`. Ensure this virtual machine is running before connecting to the instance via SSH. 
+
+Navigate to the `/home/ubuntu/repos/openwhisk-deploy-kube` directory. This directory contains a local GitHub repository of the repository found [here](https://github.com/Scusemua/openwhisk-deploy-kube). The repository contains a pre-configured deployment of OpenWhisk with the same settings as the one used by $\lambda$FS.  
+
+**NOTE:** Before deploying OpenWhisk, we recommend pre-creating the required NGINX `secret`. This process is described in the **Creating NGINX Secret** section above. If you executed the `configure_eks_cluster.sh` script, then this step was already performed for you.
+
+## Deploy Self-Signed Certificates
+
+**NOTE:** This step is performed automatically by the `configure_eks_cluster.sh` script. If you used/executed that script, then you do not need to perform this step.
+
+First, generate the self-signed certificates. You can change the `key.pem` and `cert.pem` filenames if desired for whatever reason. 
+
+```
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -sha256 -days 365 -nodes
+```
+
+Next, upload to IAM (changing the `cert.pem` and `key.pem` if you changed them in the previous command):
+
+```
+aws iam upload-server-certificate --server-certificate-name ow-self-signed-test --certificate-body file://cert.pem --private-key file://key.pem
+```
+
+Verify that the upload was successful by using the command:
+
+```
+aws iam list-server-certificates
+```
+
+Add the following to your `values.yaml`. Make sure to replace the `111222333444` with your AWS account ID. Likewise, use your certificate's ARN instead of the example one:
+
+```
+whisk:
+  ingress:
+    ...
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-internal: 0.0.0.0/0
+      service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:iam::111222333444:server-certificate/ow-self-signed
+    ...
+```
+
+## Deploying & Updating OpenWhisk
+
+**IMPORTANT:** Please ensure you are using the `aws` branch of the `openwhisk-deploy-kube` repository.
+
+To deploy OpenWhisk for the first time, navigate to the `openwhisk-deploy-kube/helm/openwhisk` directory and execute the following command:
+
+```
+# Note that you can change `owdev` to be whatever you want.
+# It will be the name of the OpenWhisk Kubernetes deployment.
+helm install owdev -f values.yaml .
+```
+
+If you wish to update your existing OpenWhisk deployment after modifying some settings, navigate to the `openwhisk-deploy-kube/helm/openwhisk` directory and execute the following command:
+
+```
+# Change `owdev` to whatever name you assigned to your OpenWhisk Kubernetes deployment.
+helm upgrade owdev -f values.yaml .
+```
+
+Shortly after you deploy your helm chart, an ELB should be automatically created. You can determine its hostname by issuing the command `kubectl get services -o wide`. 
+
+Use the value in the the `EXTERNAL-IP` column for the nginx service and port 80 to define your wsk `apihost` property:
+
+```
+wsk -i property set --apihost http://<EXTERNAL-IP>:80
+```
+
+**IMPORTANT:** Make sure to prepend `<EXTERNAL-IP>` with `"http://"` when setting the `apihost` property as is shown in the command above. 
+
+You may also modify the `apiHostName` and `apiHostPort` fields of the `values.yaml` file to contain the new API host and port as specified in the command above.
+
+```
+whisk:
+  # Ingress defines how to access OpenWhisk from outside the Kubernetes cluster.
+  # Only a subset of the values are actually used on any specific type of cluster.
+  # See the "Configuring OpenWhisk section" of the docs/k8s-*.md that matches
+  # your cluster type for details on what values to provide and how to get them.
+  ingress:
+    apiHostName: http://<EXTERNAL-IP>
+    apiHostPort: 80
+    apiHostProto: "https"
+...
+```
+
+You may monitor the progress of the OpenWhisk deployment by inspecting the various pods.
+
+```
+kubectl get pods 
+```

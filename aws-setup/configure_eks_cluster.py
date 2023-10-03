@@ -29,6 +29,7 @@ os.system("color")
 # - kubectl
 
 AmazonEBSCSIDriverPolicyARN = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+AmazonEBSCSIDriverAddonName = "aws-ebs-csi-driver"
 
 # Set up logging.
 logger = logging.getLogger(__name__)
@@ -108,7 +109,14 @@ def install_amazon_ebs_csi_driver(
     References:
     - https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html
     """
+    # First, create the IAM role and attach the AWS-provided AmazonEBSCSIDriverPolicy policy.
     create_and_attach_iam_role_for_ebs_csi_driver(aws_eks_cluster_name = aws_eks_cluster_name, aws_account_id = aws_account_id, aws_region = aws_region, eks_client = eks_client, iam_client = iam_client, ebs_csi_driver_iam_role_name = ebs_csi_driver_iam_role_name)
+    
+    # Second, create the Amazon EBS CSI Driver Addon.
+    create_ebs_csi_driver_addon(aws_eks_cluster_name = aws_eks_cluster_name, aws_account_id = aws_account_id, ebs_csi_driver_iam_role_name = ebs_csi_driver_iam_role_name, eks_client = eks_client)
+    
+    # Finally, annotate the Kubernetes service account.
+    annotate_k8s_service_account(aws_account_id = aws_account_id, ebs_csi_driver_iam_role_name = ebs_csi_driver_iam_role_name)
 
 def create_and_attach_iam_role_for_ebs_csi_driver(
     aws_eks_cluster_name:str = None,
@@ -190,6 +198,70 @@ def create_and_attach_iam_role_for_ebs_csi_driver(
         log_error("Role name (not hard-coded): %s" % ebs_csi_driver_iam_role_name)
         log_error("Policy ARN (hard-coded): %s" % AmazonEBSCSIDriverPolicyARN)
         raise ex 
+
+def create_ebs_csi_driver_addon(
+    aws_eks_cluster_name:str = None,
+    aws_account_id:str = None,
+    ebs_csi_driver_iam_role_name:str = None,
+    eks_client = None,
+):
+    if aws_eks_cluster_name is None:
+        log_error("Parameter aws_eks_cluster_name (str) cannot be None.")
+        exit(1)
+
+    if aws_account_id is None:
+        log_error("Parameter aws_account_id (str) cannot be None.")
+        exit(1)  
+    
+    if ebs_csi_driver_iam_role_name is None:
+        log_error("Parameter ebs_csi_driver_iam_role_name (str) cannot be None.")
+        exit(1)
+        
+    if eks_client is None:
+        log_error("Parameter eks_client cannot be None.")
+        exit(1)
+    
+    serviceAccountRoleArn = "arn:aws:iam::%s:role/%s"
+    
+    try:
+        eks_client.create_addon(
+            clusterName = aws_eks_cluster_name,
+            addonName = AmazonEBSCSIDriverAddonName,
+            serviceAccountRoleArn = serviceAccountRoleArn % (aws_account_id, ebs_csi_driver_iam_role_name)
+        )
+    except Exception as ex:
+        log_error("Exception encountered while trying to create the Amazon EBS CSI Driver add-on.")
+        raise ex 
+
+def annotate_k8s_service_account(
+    aws_account_id:str = None,
+    ebs_csi_driver_iam_role_name:str = None,
+):
+    if aws_account_id is None:
+        log_error("Parameter aws_account_id (str) cannot be None.")
+        exit(1)  
+    
+    if ebs_csi_driver_iam_role_name is None:
+        log_error("Parameter ebs_csi_driver_iam_role_name (str) cannot be None.")
+        exit(1)
+    
+    if os.name == 'nt':
+        try:
+            p = subprocess.Popen("annotate_k8s_sa.bat %s %s" % (aws_account_id, ebs_csi_driver_iam_role_name), cwd="./scripts/")
+            stdout, stderr = p.communicate()
+            logger.info(stdout.read())
+            log_error("%s" % stderr.read())
+        except Exception as ex:
+            log_error("Exception while attempting to run the 'annotate_k8s_sa.sh' script located in aws-setup/scripts/annotate_k8s_sa.sh.")
+            raise ex 
+    else:
+        try:
+            logger.info("Executing shell command via subprocess module.")
+            logger.info("Command: sh ./scripts/annotate_k8s_sa.sh %s %s" % (aws_account_id, ebs_csi_driver_iam_role_name))
+            subprocess.call(['sh', './scripts/annotate_k8s_sa.sh', 'aws_account_id', 'ebs_csi_driver_iam_role_name'])
+        except Exception as ex:
+            log_error("Exception while attempting to run the 'annotate_k8s_sa.sh' script located in aws-setup/scripts/annotate_k8s_sa.sh.")
+            raise ex 
 
 def main():
     global NO_COLOR

@@ -1115,8 +1115,8 @@ def create_ndb_cluster(
     
     logger.info("Created NDB EC2 instances.")
     logger.info("Created 1 NDB Manager Node and %d NDB DataNode(s)." % len(datanode_ids))
-    logger.info("Sleeping for 30 seconds while the NDB VMs start-up.")
-    for i in tqdm(range(120)):
+    logger.info("Sleeping for 45 seconds while the NDB VMs start-up.")
+    for i in tqdm(range(180)):
         sleep(0.25)
     
     # Resolving this separately/explicitly, as it kept being None when I tried to access the field, even after waiting.
@@ -1300,18 +1300,19 @@ def start_ndb_cluster(
     
         _, stdout, stderr = ssh_client.exec_command("sudo -S /usr/local/bin/ndb_mgmd --skip-config-cache -f /var/lib/mysql-cluster/config.ini")    
         logger.info(stdout.read().decode())
-        logger.info(stderr.read().decode())
         
-        logger.info("Started manager (hopefully).")
-        logger.info("Restarting mysql service. (This may take a minute or two.)")
-        st = time.time() 
-        
-        _, stdout, stderr = ssh_client.exec_command("sudo -S service mysql restart")    
         logger.info(stdout.read().decode())
-        logger.info(stderr.read().decode())
+        stderr_output = stderr.read().decode()
         
-        logger.info("Restarted MySQL service. Time elapsed: %.2f seconds." % (time.time() - st))
+        if len(stderr_output.strip()) > 0:
+            log_error(stderr_output)
+            
+            if "ERROR" in stderr_output.upper() or "EXCEPTION" in stderr_output.upper():
+                log_error("Exiting. The NDB EC2 VMs will NOT be terminated, though. Please visit the AWS EC2 Console to terminate the VMs (or use the command-line).")
+                # TODO: Terminate NDB EC2 VMs at this point?
+                return 
     
+        log_success("Started NDB manager node.")
         ssh_client.close()
     
     print()
@@ -1333,8 +1334,25 @@ def start_ndb_cluster(
         ssh_client.close()
 
         logger.info("Started data node (hopefully).")
-        
-        # subprocess.call(["start_ndb_datanode.sh", data_node_ip, ssh_key_path])
+
+    logger.info("Restarting mysql service. (This may take a minute or two.)")
+    st = time.time() 
+    
+    ssh_client = SSHClient()
+    ssh_client.set_missing_host_key_policy(AutoAddPolicy)
+    logger.info("Connecting to MySQL NDB Manager Node VM at %s" % ndb_mgm_ip)
+    ssh_client.connect(hostname = ndb_mgm_ip, port = 22, username = "ubuntu", pkey = key)
+    logger.info("Connected! Restarting mysql service now.")
+    
+    _, stdout, stderr = ssh_client.exec_command("sudo -S service mysql restart")    
+    logger.info(stdout.read().decode())
+    logger.info(stderr.read().decode())
+    
+    logger.info("Restarted MySQL service. Time elapsed: %.2f seconds." % (time.time() - st))
+    
+    logger.info("Sleeping for 15 seconds.")
+    for _ in tqdm(range(60)):
+        sleep(0.25)
 
 def populate_mysql_ndb_tables(
     ndb_mgm_ip:str = None,
@@ -1372,8 +1390,9 @@ def populate_mysql_ndb_tables(
         if len(stderr_output.strip()) > 0:
             log_error(stderr_output)
             
-            if "ERROR" in stderr_output:
-                return 
+            if "ERROR" in stderr_output.upper():
+                log_error("Exiting. The NDB EC2 VMs will NOT be terminated, though. Please visit the AWS EC2 Console to terminate the VMs (or use the command-line).")
+                exit(1)
         
         log_success("Created MySQL user \"user\"")
     
@@ -1920,8 +1939,8 @@ def main():
         start_ndb_cluster(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path, data_node_ips = data_node_public_ips)
         log_success("Successfully started the MySQL NDB cluster (hopefully).")
         
-        logger.info("Sleeping for 30 seconds to give the NDB cluster a chance to start-up.")
-        for _ in tqdm(range(121)):
+        logger.info("Sleeping for 60 seconds while the MySQL NDB Cluster begins running.")
+        for _ in tqdm(range(240)):
             sleep(0.25)
 
     if do_populate_mysql_ndb_tables:

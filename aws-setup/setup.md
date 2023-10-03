@@ -92,6 +92,10 @@ There is no logging that must be configured. If you are performing this step usi
 
 After creating your AWS EKS cluster, it may take 10 - 15 minutes for the cluster to become operational. Once the cluster becomes operational, there are some additional steps that must be taken before deploying OpenWhisk. 
 
+### **Enabling IAM principal access to your cluster**
+
+Please refer to [this documentation](https://docs.aws.amazon.com/eks/latest/userguide/add-user-role.html) for this step.
+
 ### **Amazon EBS CSI Driver**
 
 #### **Overview**
@@ -162,7 +166,55 @@ In this section, we describe some commonly-encountered problems (and their solut
 
 You may see this error message displayed at the top of the AWS Web Console when viewing your AWS EKS cluster. In order to resolve this error, please follow the instructions outlined in the [Amazon EKS "View Kubernetes resources" documentation](https://docs.aws.amazon.com/eks/latest/userguide/view-kubernetes-resources.html#view-kubernetes-resources-permissions). 
 
-This documentation mentions ensuring that the proper permissions are assigned "to the IAM principal that you're using." 
+This documentation mentions ensuring that the proper permissions are assigned "to the IAM principal that you're using." This should be the IAM Role that was in-use wherever you created the AWS EKS cluster from. For example, if you created the EKS cluster using scripts or the AWS CLI, then its the role associated with your credentials as configured on that machine. If you used the AWS Web Console, then its the IAM Role assumed by whatever IAM User is associated with the AWS Web Console. 
+
+We have also found success by updating the `configmap` of the Kubernetes cluster as follows:
+```
+kubectl edit configmap aws-auth -n kube-system
+```
+
+Under the `mapRoles` field, you may have a `mapUsers` field at the same indentation level. If not, add one as follows:
+
+```
+  mapUsers: |
+    - groups:
+      - system:masters
+      userarn: arn:aws:iam::111222333444:user/<IAM principal user name>
+    - groups:
+      - system:masters
+      userarn: arn:aws:iam::111222333444:root
+```
+
+Altogether, the `configmap` will look something like this:
+
+```
+apiVersion: v1
+data:
+  mapRoles: |
+    - groups:
+      - system:bootstrappers
+      - system:nodes
+      rolearn: arn:aws:iam::111222333444:role/<EKS cluster IAM role>
+      username: system:node:{{EC2PrivateDNSName}}
+    - groups:
+      - system:bootstrappers
+      - system:nodes
+      rolearn: arn:aws:iam::111222333444:role/<EKS node role>
+      username: system:node:{{EC2PrivateDNSName}}
+    - groups:
+      - <eks-console-dashboard-full-access-group>
+      rolearn: arn:aws:iam::111222333444:role/<IAM principal role>
+  mapUsers: |
+    - groups:
+      - system:masters
+      userarn: arn:aws:iam::111222333444:user/<IAM principal user name>
+    - groups:
+      - system:masters
+      userarn: arn:aws:iam::111222333444:root
+...
+```
+
+For additional information concerning this issue and how to fix it, please refer to [this AWS documentation](https://docs.aws.amazon.com/eks/latest/userguide/add-user-role.html).
 
 ### **Failure to Generate NGINX Secret When Deploying OpenWhisk**
 

@@ -1,6 +1,6 @@
 # AWS Setup 
 
-The following document provides a set of directions for creating the required AWS infrastructure to deploy and run $\lambda$FS and HopsFS. Much of this process can be automated using the `create_aws_infrastructure.py` and `configure_eks_cluster.sh` scripts. The `configure_eks_cluster.sh` script should be executed once the AWS EKS cluster created by the `create_aws_infrastructure.py` script becomes operational. 
+The following document provides a set of directions for creating the required AWS infrastructure to deploy and run $\lambda$FS and HopsFS. Much of this process can be automated using the `create_aws_infrastructure.py` and `configure_eks_cluster.py` scripts. The `configure_eks_cluster.py` script should be executed once the AWS EKS cluster created by the `create_aws_infrastructure.py` script becomes operational. 
 
 Please note that the `setup_tldr.md` document provides an abridged version of these instructions. 
 
@@ -48,7 +48,7 @@ If you are interested in manually deploying or configuring your VPC, the `Networ
 
 # AWS Elastic Kubernetes Service (EKS)
 
-The AWS EKS cluster used by $\lambda$FS can be created automatically using both the `create_aws_infrastructure.py` and `configure_eks_cluster.sh` scripts. As described above, the `configure_eks_cluster.sh` script should be executed once the AWS EKS cluster created by the `create_aws_infrastructure.py` script becomes operational. 
+The AWS EKS cluster used by $\lambda$FS can be created automatically using both the `create_aws_infrastructure.py` and `configure_eks_cluster.py` scripts. As described above, the `configure_eks_cluster.py` script should be executed once the AWS EKS cluster created by the `create_aws_infrastructure.py` script becomes operational. 
 
 Nevertheless, we have found it to be a little tricky to deploy OpenWhisk on AWS EKS. The following are some useful resources concerning the creation of an AWS EKS cluster and the subsequent deployment of OpenWhisk onto the AWS EKS cluster:
 
@@ -136,7 +136,7 @@ problems making Certificate Request
 139693137723840:error:0D07A097:asn1 encoding routines:ASN1_mbstring_ncopy:string too long:../crypto/asn1/a_mbstr.c:107:maxsize=64
 ```
 
-To avoid this, you can simply pre-create the `<openwhisk-deployment-name>-nginx` secret *before* attempting to deploy OpenWhisk. This process is performed automatically by the `configure_eks_cluster.sh` script; however, if you are setting up the AWS EKS cluster manually, then you will (likely) need to perform this step yourself. If you elect to skip this step and deploy OpenWhisk without pre-creating the secret, and you ultimately encounter the error, then simply perform `helm uninstall <deployment-name>` to uninstall OpenWhisk from your Kubernetes cluster. Then, follow the steps here before trying again to deploy OpenWhisk. 
+To avoid this, you can simply pre-create the `<openwhisk-deployment-name>-nginx` secret *before* attempting to deploy OpenWhisk. This process is performed automatically by the `configure_eks_cluster.py` script; however, if you are setting up the AWS EKS cluster manually, then you will (likely) need to perform this step yourself. If you elect to skip this step and deploy OpenWhisk without pre-creating the secret, and you ultimately encounter the error, then simply perform `helm uninstall <deployment-name>` to uninstall OpenWhisk from your Kubernetes cluster. Then, follow the steps here before trying again to deploy OpenWhisk. 
 
 #### **Creating NGINX Secret**
 
@@ -240,11 +240,9 @@ To do this, we recommend creating the $\lambda$FS "primary" client and experimen
 
 Navigate to the `/home/ubuntu/repos/openwhisk-deploy-kube` directory. This directory contains a local GitHub repository of the repository found [here](https://github.com/Scusemua/openwhisk-deploy-kube). The repository contains a pre-configured deployment of OpenWhisk with the same settings as the one used by $\lambda$FS.  
 
-**NOTE:** Before deploying OpenWhisk, we recommend pre-creating the required NGINX `secret`. This process is described in the **Creating NGINX Secret** section above. If you executed the `configure_eks_cluster.sh` script, then this step was already performed for you.
+**NOTE:** Before deploying OpenWhisk, we recommend pre-creating the required NGINX `secret`. This process is described in the **Creating NGINX Secret** section above. If you executed the `configure_eks_cluster.py` script, then this step was already performed for you.
 
 ## Deploy Self-Signed Certificates
-
-**NOTE:** This step is performed automatically by the `configure_eks_cluster.sh` script. If you used/executed that script, then you do not need to perform this step.
 
 First, generate the self-signed certificates. You can change the `key.pem` and `cert.pem` filenames if desired for whatever reason. 
 
@@ -326,3 +324,5 @@ You may monitor the progress of the OpenWhisk deployment by inspecting the vario
 ```
 kubectl get pods 
 ```
+
+Once OpenWhisk is up-and-running, you are almost done setting everything up!

@@ -18,9 +18,9 @@ python3 -m pip install -r requirements.txt
 
 (You may need to adjust the command above depending on how you invoke python/pip.)
 
-## Step 2: Manual configuration (`config.yaml`)
+## Step 2: Manual configuration (`config_aws.yaml`)
 
-Create a `config.yaml`, using the `sample_config.yaml` as a reference. Provide values for the `ssh_keypair_name`, `ssh_key_path`, and `aws_profile` configuration parameters as described in `setup.md`. 
+Create a `config_aws.yaml`, using the `sample_config_aws.yaml` as a reference. Provide values for the `ssh_keypair_name`, `ssh_key_path`, and `aws_profile` configuration parameters as described in `setup.md`. 
 
 Once your configuration file has been created and is located within the `aws-setup/` directory, execute the `create_aws_infrastructure.py` script using `Python 3`. We tested this script on Windows 10 version 22H2 (OS Build 19045.3448) with Python 3.9.4 (tags/v3.9.4:1f2e308, Apr  6 2021, 13:40:21).
 
@@ -29,7 +29,7 @@ Once your configuration file has been created and is located within the `aws-set
 Execute the `create_aws_infrastructure.py` script as follows:
 
 ```
-python3 create_aws_infrastructure.py --yaml ./config.yaml
+python3 create_aws_infrastructure.py --yaml ./config_aws.yaml
 ```
 
 ## Step 4: Execute `configure_eks_cluster.sh`

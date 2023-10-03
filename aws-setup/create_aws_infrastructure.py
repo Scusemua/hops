@@ -24,9 +24,8 @@ os.system("color")
 
 """
 This script creates all of the infrastrucutre necessary to run λFS and Vanilla HopsFS, 
-and to replicate the experiments conducted in the paper, "".
-
-This script should be executed from 
+and to replicate the experiments conducted in the paper,
+"λ FS: A Scalable and Elastic Distributed File System Metadata Service using Serverless Functions"
 """
 
 MYSQL_NDB_MANAGER_AMI = "ami-0959eff7dbad22195" # "ami-0a0e055a66e58df2c"
@@ -1445,7 +1444,7 @@ def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     
     # YAML
-    parser.add_argument("-y", "--yaml", type = str, default = None, help = "The path of a YAML configuration file.") #, which can be used in-place of command-line arguments. If nothing is passed for this, then command-line arguments will be used. If a YAML file is passed, then command-line arguments for properties that CAN be defined in YAML will be ignored (even if you did not define them in the YAML file).")
+    parser.add_argument("-y", "--yaml", type = str, default = "config_aws.yaml", help = "The path of a YAML configuration file.") #, which can be used in-place of command-line arguments. If nothing is passed for this, then command-line arguments will be used. If a YAML file is passed, then command-line arguments for properties that CAN be defined in YAML will be ignored (even if you did not define them in the YAML file).")
     return parser.parse_args()
 
 def main():

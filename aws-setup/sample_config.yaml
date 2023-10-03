@@ -1,3 +1,7 @@
+#####################################################
+# Used by the 'create_aws_infrastructure.py' script #
+#####################################################
+
 # Toggles color formatting in the log/console output of the installation/setup script.
 no_color: False
 

@@ -25,7 +25,7 @@ The default values for most parameters will be sufficient. There are a few that 
 - `ssh_key_path`: This is a path to the private key of the EC2 key pair specified in the `ssh_keypair_name` parameter. **This must be an RSA key.**
 - `aws_profile` (*possibly*): Depending on how you've configured the AWS credentials on your computer, you may be able to simply use the default AWS credentials profile. If you've not configured any AWS credentials on your computer, then this can be done by installing the [AWS CLI](https://aws.amazon.com/cli/). See [this AWS documentation](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html) concerning "configuration and credential file settings" for more details.
 
-Copying the `sample_config.yaml` file to a `config.yaml` file and using the default values for all other configurations parameters (aside from the parameters explicitly listed above) should be sufficient for creating all of the necessary components.
+Copying the `sample_config_aws.yaml` file to a `config_aws.yaml` file and using the default values for all other configurations parameters (aside from the parameters explicitly listed above) should be sufficient for creating all of the necessary components.
 
 The `create_aws_infrastructure.py` script will automatically provision the following components:
 
@@ -42,7 +42,7 @@ The `create_aws_infrastructure.py` script will automatically provision the follo
 - AWS Elastic Kubernetes Service (EKS) cluster, onto which we deploy OpenWhisk, the FaaS platform used by $\lambda$FS.
   - The script also creates a number of other componets required by the AWS EKS cluster, including an IAM role, service accounts, etc.
 
-The script can be configured by creating a `config.yaml` file within the same directory as the script (i.e., the `aws-setup/` directory). There is a `sample_config.yaml` provided with explanations of the various configuration parameters. 
+The script can be configured by creating a `config_aws.yaml` file within the same directory as the script (i.e., the `aws-setup/` directory). There is a `sample_config_aws.yaml` provided with explanations of the various configuration parameters. 
 
 If you are interested in manually deploying or configuring your VPC, the `Networking` section of the `AWS Elastic Kubernetes Service (EKS)` instructions provides information about what is required in the VPC.
 

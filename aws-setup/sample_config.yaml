@@ -55,6 +55,21 @@ create_lambda_fs_client_vm: True
 # Create the primary HopsFS client VM and experiment driver.
 create_hops_fs_client_vm: True
 
+# If you run the script once and generate some of the infrastructure, the IDs of the generated 
+# components will be written to a file in the aws_setup/infrastructure_json/ directory.
+# You can pass this file to the script for future executions and reuse the already-created components.
+#
+# For example, you can just create the VPC the first time you run the script.
+# In subsequent executions, you can set `skip_vpc_creation` to True and simply pass the JSON file to the
+# script. The script will then read the VPC ID from the JSON file. (The script can also resolve the ID
+# using the VPC name, which is another parameter to the script, but this general mechanism works for
+# all of the infrastructure created/managed by the script.)
+#
+# The use-case for this is if something goes wrong while executing the script for some reason -- you 
+# can essentially use these JSON files as checkpoints to execute the script again without having to
+# delete and recreate everything first.
+# infrastructure_json_file_name: "./infrastructure_json"
+
 # Start the ZooKeeper cluster. If you are not creating the VMs as well, then you need to pass a YAML list of 
 # IPs via the "zk_node_public_IPs" YAML parameter.
 #
@@ -85,7 +100,7 @@ create_ndb_cluster: True
 # If True, start the MySQL NDB Cluster VMs (manager node and data nodes).
 start_ndb_cluster: True 
 # If True, then populate the MySQL Cluster NDB database with HopsFS/LambdaFS tables.
-populate_ndb_tables: True 
+populate_mysql_ndb_tables: True 
 # The number of MySQL NDB Data Nodes to create. We used four in our ASPLOS'23 evaluation,
 # but performance does not change significantly. 2 would also work, especially for testing and debugging. 
 num_ndb_datanodes: 4

@@ -962,7 +962,7 @@ def populate_zookeeper(
     logger.info("Connected! Populating ZK now.")
     
     sftp = ssh_client.open_sftp()
-    sftp.put("./populate_zk_script", "/home/ubuntu/populate_zk_script")
+    sftp.put("./scripts/populate_zk_script", "/home/ubuntu/populate_zk_script")
     
     _, stdout, stderr = ssh_client.exec_command("sudo /opt/zookeeper/bin/zkCli.sh < /home/ubuntu/populate_zk_script")
     
@@ -1753,7 +1753,10 @@ def main():
             
     log_success("Resolved VPC ID of VPC \"%s\" as %s" % (vpc_name, vpc_id))
     
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    if not os.path.exists("./infrastructure_json"):
+        os.mkdir("./infrastructure_json")
+    
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
       
     if not skip_eks:
@@ -1768,7 +1771,7 @@ def main():
             eks_iam_role_name = eks_iam_role_name,
         )
     
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
     
     logger.info("Creating EC2 launch templates and instance groups now.")
@@ -1798,7 +1801,7 @@ def main():
         data = data
     )
     
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
     
     # Get the subnet ID(s).
@@ -1910,7 +1913,7 @@ def main():
             ec2_client.terminate_instances(InstanceIds = datanode_ids)
             raise ex 
    
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
     
     if do_start_ndb_cluster:
@@ -1959,7 +1962,7 @@ def main():
         populate_mysql_ndb_tables(ndb_mgm_ip = ndb_mgm_public_ip, ssh_key_path = ssh_key_path)
         log_success("Successfully populated the MySQL NDB cluster (hopefully).")
     
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
     
     zk_node_public_IPs = None
@@ -1983,7 +1986,7 @@ def main():
         logger.info("Updating ZooKeeper configuration now.")
         zk_node_public_IPs = update_zookeeper_config(ec2_client = ec2_client, instance_ids = zk_node_IDs, ssh_key_path = ssh_key_path, zookeeper_jvm_heap_size = zookeeper_jvm_heap_size, data = data)
     
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
     
     if do_start_zookeeper_cluster:
@@ -2026,7 +2029,7 @@ def main():
         
         data["lambda_fs_primary_client_vm_id"] = lambda_fs_primary_client_vm_id
         
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
         
     if do_create_hops_fs_client_vm:
@@ -2036,14 +2039,14 @@ def main():
         
         data["hops_fs_primary_client_vm_id"] = hops_fs_primary_client_vm_id
     
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
     
     logger.info("Newly created AWS infrastrucutre:")
     for k,v in data.items():
         logger.info("%s: %s" % (k, str(v)))
     
-    with open("./infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
+    with open("./infrastructure_json/infrastructure_ids_%s.json" % current_datetime, "w", encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 if __name__ == "__main__":

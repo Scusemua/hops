@@ -23,6 +23,6 @@ dev-support/public_ips_no_user.txt
 dev-support/output/
 
 aws-setup/config.yaml
-aws-setup/*.json
+aws-setup/infrastructure_json/*.json
 
 aws-setup/test_start_datanode.py

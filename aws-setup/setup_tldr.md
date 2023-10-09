@@ -168,3 +168,4 @@ Execute the following command to automatically register 20 NameNode deployments 
 ```
 python3 /home/ubuntu/repos/hops/dev-support/whisk/whisk_helper_gcp.py -n 20 --create --memory 20000 --concurrency 4
 ```
+
